@@ -1,0 +1,24 @@
+{
+  "name": "cartographers-fog",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "description": "Hand-drawn persistent fog for Owlbear Rodeo — a companion to Dynamic Fog",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "devlog": "node tools/devlog-server.mjs"
+  },
+  "dependencies": {
+    "@owlbear-rodeo/sdk": "^3.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  }
+}

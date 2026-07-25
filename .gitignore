@@ -16,8 +16,9 @@ dev.log
 .DS_Store
 Thumbs.db
 
-# Claude Code local settings
+# Claude Code local settings and tooling
 .claude/settings.local.json
+.claude/launch.json
 
 # Private operating notes for Claude — not project documentation.
 # Project docs live in README.md and DESIGN.md.

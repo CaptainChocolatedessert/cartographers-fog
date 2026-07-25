@@ -1,0 +1,9 @@
+{
+  "name": "Cartographer's Fog",
+  "version": "0.0.1",
+  "manifest_version": 1,
+  "author": "Captain Chocolatedessert",
+  "homepage_url": "https://github.com/CaptainChocolatedessert/cartographers-fog",
+  "description": "Hand-drawn persistent fog. Explored areas stay on the map as a sketch. Companion to Dynamic Fog.",
+  "background_url": "/cartographers-fog/background.html"
+}
