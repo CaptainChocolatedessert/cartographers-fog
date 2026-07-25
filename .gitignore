@@ -19,6 +19,10 @@ Thumbs.db
 # Claude Code local settings
 .claude/settings.local.json
 
+# Private operating notes for Claude — not project documentation.
+# Project docs live in README.md and DESIGN.md.
+CLAUDE.md
+
 # Logs
 *.log
 npm-debug.log*

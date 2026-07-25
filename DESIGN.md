@@ -1,29 +1,16 @@
-# CLAUDE.md — Cartographer's Fog
+# Design — Cartographer's Fog
 
-An Owlbear Rodeo extension that adds **persistence** to dynamic fog, rendered as a
-hand-drawn sepia map sketch of previously-explored terrain.
-
----
-
-## The idea in one paragraph
-
-Owlbear Rodeo's native Dynamic Fog extension does real line-of-sight but has no memory —
-walk away from a room and it goes dark again. This project adds persistence, but instead of
-simply leaving the map revealed, it leaves behind a **squiggly sepia line drawing** derived
-from edge detection of the underlying map image. The effect should read as if the party is
-sketching a map as they explore. Areas currently in direct line of sight show the real map;
-areas previously seen but not currently visible show only the sketch; areas never visited
-stay fully fogged.
+Architecture, constraints, and the reasoning behind them. See [README.md](README.md) for what
+the project is and how to run it.
 
 ---
 
 ## Starting point
 
-Fork or build on **`owlbear-rodeo/dynamic-fog`** (React + TypeScript + Vite). It is
-Owlbear's own open-source extension, explicitly published as an example of SDK usage, and it
-already implements walls, doors, lights, and line-of-sight rendering.
-
-**Check its license before redistributing anything.**
+Fork or build on **`owlbear-rodeo/dynamic-fog`** (React + TypeScript + Vite). It is Owlbear's
+own open-source extension, explicitly published as an example of SDK usage, and it already
+implements walls, doors, lights, and line-of-sight rendering. It is GPLv3, which is why this
+project is too.
 
 ### Why not build on Smoke & Spectre
 
@@ -127,9 +114,9 @@ the cost of item count.
 ### 4. Region math
 
 ```
-discovered      = union of all past visibility polygons
+discovered        = union of all past visibility polygons
 currently_visible = union of current visibility polygons
-sketch_region   = discovered − currently_visible
+sketch_region     = discovered − currently_visible
 ```
 
 Only segments whose midpoint falls in `sketch_region` are shown. This is what keeps scribbles
@@ -225,14 +212,10 @@ regardless of origin — far less coordination than a full import pipeline.
 
 ---
 
-## Testing and verification
+## Testing strategy
 
-Claude Code **cannot** open a live Owlbear room. Plan around that; it constrains less than it
-appears, because most of the difficult logic is pure.
-
-### Headlessly testable (this is the majority of the work)
-
-Write vitest suites for these and iterate without a browser:
+Most of the difficult logic is pure, and therefore testable without a browser. Write vitest
+suites for these and iterate headlessly:
 
 - Visibility polygon construction from `Wall` items
 - Contour tracing and simplification
@@ -240,7 +223,7 @@ Write vitest suites for these and iterate without a browser:
 - Segment midpoint classification against `sketch_region`
 - Image-space → world-space transform math
 
-These are pure functions over data and this is where the bugs will actually be.
+These are pure functions over data, and this is where the bugs will actually be.
 
 ### Mock the SDK
 
@@ -250,8 +233,8 @@ across changes. A good harness here is worth more than browser automation.
 
 ### Dev log shim — add this early
 
-Closes the loop between "I clicked something and it broke in a real room" and Claude Code
-seeing the stack trace. Highest-leverage item on this list.
+Closes the loop between "I clicked something and it broke in a real room" and being able to
+read the stack trace outside the browser. Highest-leverage item on this list.
 
 ```js
 if (import.meta.env.DEV) {
@@ -266,19 +249,13 @@ if (import.meta.env.DEV) {
 }
 ```
 
-Pair with a small Node server that appends to `dev.log`, which Claude Code can then read.
+Pair with a small Node server that appends to `dev.log`.
 
 ### Limits of browser automation
 
 Playwright can drive the iframe standalone, but `OBR.isAvailable` will be `false` and the SDK
 inert. Driving real Owlbear means automating a logged-in third-party account — fragile, and
 check their ToS before building infrastructure on it.
-
-### Not delegable
-
-- The CORS probe must run in a real authenticated room
-- Whether the sketch *looks* hand-drawn is a human judgment, and it is the entire point of the
-  feature
 
 ---
 
@@ -305,7 +282,8 @@ keeping in the back pocket for a quick visual spike.
 
 ## Open questions
 
-- **CORS.** See the dedicated section above. Blocking question — resolve before step 4.
+- **CORS.** See the dedicated section above. Blocking question — resolve before step 4 of the
+  build order.
 - **Discovered-region encoding.** Grid bitmask? Quadtree? Polygon union? Needs to be compact
   enough to live comfortably in scene metadata and cheap to test points against.
 - **Performance budget.** How many `Path` items can a scene hold before OBR degrades? This
@@ -315,7 +293,7 @@ keeping in the back pocket for a quick visual spike.
 
 ---
 
-## Build order suggestion
+## Build order
 
 0. **Run the CORS probe.** Five minutes, and it determines whether steps 4+ target scene
    assets or a file picker. Do this before writing anything else.
