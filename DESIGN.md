@@ -7,10 +7,37 @@ the project is and how to run it.
 
 ## Starting point
 
-Fork or build on **`owlbear-rodeo/dynamic-fog`** (React + TypeScript + Vite). It is Owlbear's
-own open-source extension, explicitly published as an example of SDK usage, and it already
-implements walls, doors, lights, and line-of-sight rendering. It is GPLv3, which is why this
-project is too.
+Cartographer's Fog is a **standalone companion extension that runs alongside
+`owlbear-rodeo/dynamic-fog`** — not a fork of it, and not a replacement for it. Dynamic Fog
+stays installed and keeps doing what it does well: placing walls and lights and driving
+Owlbear's line-of-sight rendering. This extension reads that output and adds the persistence
+sketch on top.
+
+This works because Dynamic Fog does not invent a private data format. `Wall` and `Light` are
+first-class SDK item types living in ordinary scene items, and any installed extension can read
+all scene items regardless of which extension created them. There is prior art: desain's
+visibility extension already consumes walls from Dynamic Fog *and* Smoke & Spectre without
+forking either.
+
+The architecture below is read-only on Dynamic Fog's data. Visibility is computed from `Wall`
+items, the discovered region is stored in scene metadata under this extension's own namespace,
+and sketch strokes are emitted as local per-client items. Nothing here writes anything Dynamic
+Fog owns.
+
+This project is GPLv3. As a companion sharing no code it is not a derivative work, so that is a
+choice rather than an inherited obligation.
+
+### Why not fork Dynamic Fog
+
+A fork is not a patch on someone's installed Dynamic Fog — it is a *replacement* they install
+instead, which forces existing users to switch tools and leaves this project with permanent
+merge maintenance. It also buys no access that is actually needed: Owlbear computes fog on the
+GPU and never exposes visibility to extensions, so a fork would still have to compute
+visibility on the CPU exactly as described below.
+
+Worth knowing: the fog semantics live in the closed-source Owlbear app renderer, not in
+`dynamic-fog`, which is largely placement UI over native item types. Reading its source answers
+fewer questions than it appears to.
 
 ### Why not build on Smoke & Spectre
 
@@ -18,6 +45,15 @@ Smoke & Spectre is the popular community extension that already has persistence.
 viable base: closed source, shipped only as a minified production bundle, no public repo, and
 no license granting modification rights. Reverse-engineering it would also mean re-doing the
 work on every upstream update.
+
+It does bound the scope of this project, though. **Persistence alone is not the differentiator
+— Smoke & Spectre already ships it, along with trailing fog.** What does not exist anywhere is
+the hand-drawn cartographer's aesthetic. If a feature does not serve the sketch, S&S has
+already solved it for anyone who wants it.
+
+This also fixes an interop boundary: reading native `Wall`/`Light` items means working with
+Dynamic Fog and `uvtt-importer`, and *not* with Smoke & Spectre, whose custom obstruction items
+are invisible to this extension. That is an accepted limitation, not a gap to close.
 
 ### Companion extension
 
@@ -89,6 +125,14 @@ persistence at all, not just for masking.
 Prior art exists — desain's visibility extension does exactly this, consuming walls from
 Dynamic Fog / Smoke & Spectre.
 
+**This is the project's central technical risk.** The reference implementation — Owlbear's own
+renderer — is closed source, so our CPU polygons are matching something nobody can read. `Light`
+carries `falloff`, a gradient with no polygon equivalent, so "visible" requires choosing a
+cutoff. Any mismatch shows up as sketch strokes bleeding into areas the player can plainly see,
+which is exactly the artifact the whole design is built to avoid. Budget real time for visual
+comparison against the GPU fog, and treat it as tuning rather than a correctness bug to be
+solved once. A fork would not have avoided this.
+
 ### 2. Trace edges once, not per frame
 
 At map import / scene setup:
@@ -132,6 +176,16 @@ Do **not** push item updates over the network on every token move.
 This keeps network traffic proportional to state change rather than to geometry, and gives
 per-player fog nearly for free if that's wanted later.
 
+**Single writer.** Give one client — the GM's — sole write authority over the discovered
+region. Union is commutative and idempotent, which makes multi-writer merging look safe, but it
+isn't: two clients doing read-modify-write against shared metadata can interleave such that one
+overwrites bits the other just added. Single-writer sidesteps the problem entirely and costs
+nothing here.
+
+Scene metadata is reportedly capped at **16KB** (verify against the SDK docs at implementation
+time). This bounds the encoding question below — for scale, a 100×100 cell bitmask is about
+1.25KB raw, before any compression.
+
 ### 6. Squiggle noise must be static
 
 Seed the wobble from a hash of world position, **never** from the `time` uniform. Animated
@@ -146,7 +200,7 @@ appearing and receding.
 
 ---
 
-## Map pixel access (CORS) — resolve this first
+## Map pixel access (CORS) — resolved: clean
 
 Edge detection needs raw pixels via `getImageData()`. The extension runs in an iframe on its
 own origin; map images are served from Owlbear's asset storage on a different origin. A
@@ -154,12 +208,40 @@ cross-origin image can be *displayed* freely, but drawing it to a canvas and rea
 taints the canvas and throws `SecurityError` unless the server sends
 `Access-Control-Allow-Origin`.
 
-**Whether Owlbear's CDN sends it is unknown and undocumented.** Do not assume either way.
-This is the first thing to test, because it decides the architecture.
+**Owlbear's CDN sends it.** Assets are served from `images.owlbear.rodeo` (BunnyCDN) with
+`Access-Control-Allow-Origin: *`, verified against both a platform asset and a user-uploaded
+item asset, and returned **unconditionally** — the header is present even on requests carrying
+no `Origin` at all.
 
-### The probe
+Two consequences beyond the bare pass:
 
-Run inside the extension iframe, in a real room with a map loaded:
+- `*` rather than a reflected origin means there is no allowlist to get onto. An extension
+  hosted on any origin can read these pixels.
+- Because the header is unconditional, the cache-tainting failure mode does not apply. That bug
+  requires a cached response *lacking* the header to be reused by a later CORS load; here every
+  cached response carries it.
+
+**So: read map pixels directly from scene assets, and build the architecture as specified.**
+
+### Reproducing the header check
+
+No code required. Collect asset URLs from a live room's console via
+`performance.getEntriesByType('resource')`, then request one with an explicit origin:
+
+```sh
+curl -sS -o /dev/null -D - -H "Origin: https://<extension-origin>" "<asset-url>"
+```
+
+This reads the server's answer directly instead of inferring it from browser behaviour, and it
+tests the exact origin the extension will run on — which matters, because a reflected-origin
+policy would let the Owlbear app itself read pixels while refusing an extension.
+
+### The probe — keep it as a startup assertion
+
+The check above used asset URLs observed in the page, not the exact string `image.url` returns
+through the SDK. Same host and CDN across two asset classes, so the risk is low, but an
+assertion is cheap and a `SecurityError` surfacing deep inside a trace pipeline is not. Run
+this inside the extension iframe, in a real room with a map loaded:
 
 ```js
 const [map] = await OBR.scene.items.getItems(
@@ -182,9 +264,21 @@ img.onerror = () => console.log("BLOCKED at load");
 img.src = map.image.url;
 ```
 
-- **CLEAN** → build the architecture as specified. Read map pixels directly from the scene.
-- **BLOCKED at load** → the CDN refuses CORS. Fall back (below).
+- **CLEAN** → expected. Proceed.
+- **BLOCKED at load** → the CDN changed policy, or this asset class differs from the two
+  tested. Fall back (below).
 - **TAINTED** → shouldn't occur with `crossOrigin` set; indicates something unusual.
+
+### CDN image transforms
+
+Asset URLs accept transform query parameters — `?width=1024`, `?crop=x,y,w,h`,
+`?class=background`. Likely useful: fetch a downscaled map for edge detection rather than
+tracing at full resolution. Cheaper, and the downscale suppresses JPEG artifacts and floor
+texture that would otherwise generate spurious edges. Since the output is vectors, resolution
+is only a coordinate scale factor.
+
+Undocumented and unofficial, so test it rather than depend on it, and keep a full-resolution
+path working.
 
 ### Why direct asset access is preferred over tracing at import
 
@@ -198,12 +292,15 @@ The real reason is coverage. **Gating the feature on UVTT import excludes most m
 Owlbear users never touch UVTT — they drag in a JPG and draw fog by hand, or use a starter
 set. An extension that only works on freshly-imported UVTT files is useless to them.
 
-### Fallback if CORS is blocked
+### Fallback if pixel access ever breaks
 
-The shader route does **not** rescue the vector plan. Canvas tainting blocks GPU readback
-too, so you cannot trace through a `POST_PROCESS` effect. (Shaders are CORS-free only because
-they never extract data — fine for a purely visual effect, useless for generating `Path`
-items.)
+Not needed for v1, and no longer on the critical path — recorded because CDN policy is outside
+this project's control, and because self-hosted or externally-linked map images may not share
+the asset CDN's headers.
+
+The shader route does **not** rescue the vector plan. Canvas tainting blocks GPU readback too,
+so you cannot trace through a `POST_PROCESS` effect. (Shaders are CORS-free only because they
+never extract data — fine for a purely visual effect, useless for generating `Path` items.)
 
 The graceful fallback is a **file picker in the extension UI**: the GM supplies the map image
 once, it's traced locally as a same-origin blob, and the result is matched to the scene's
@@ -266,10 +363,20 @@ Recorded so they don't get re-litigated:
 | Approach | Why rejected |
 |---|---|
 | Fork Smoke & Spectre | Minified, closed source, no license to modify |
+| Fork Dynamic Fog | Replaces rather than extends it; permanent merge cost; buys no access we need |
+| Walls as the sketch geometry source | See below |
 | Per-frame geometric path clipping | Too expensive; pre-segmentation gets the same result cheaply |
 | Sync item updates on token move | Hammers the network; use metadata + local items |
 | `time`-driven squiggle | Visually nauseating |
 | POST_PROCESS self-masking shader | See below |
+
+**On walls as geometry:** walls are already vector data, so deriving the sketch from them would
+need no pixel access, no edge detection, and no contour tracing — and wall outlines plus
+hatching is a recognisably cartographic look. It was rejected because walls are an incomplete
+and unreliable description of a map: not every feature that should be sketched gets a wall, and
+walls are routinely drawn approximately or in the wrong place, since their only job is blocking
+light. The sketch would inherit every one of those errors. **The map image is the source of
+truth for sketch geometry.**
 
 **On the shader route:** a `POST_PROCESS` effect could sample the `scene` uniform and draw
 sketch strokes only where luminance falls below a threshold, using the fog's own darkness as
@@ -282,12 +389,19 @@ keeping in the back pocket for a quick visual spike.
 
 ## Open questions
 
-- **CORS.** See the dedicated section above. Blocking question — resolve before step 4 of the
-  build order.
+- ~~**CORS.**~~ Resolved — clean. See the dedicated section above.
 - **Discovered-region encoding.** Grid bitmask? Quadtree? Polygon union? Needs to be compact
-  enough to live comfortably in scene metadata and cheap to test points against.
+  enough to live comfortably in scene metadata and cheap to test points against. The 16KB
+  metadata cap tilts this toward a grid bitmask, which is also the cheapest to point-test;
+  polygon union is the most accurate and the most likely to blow the budget.
 - **Performance budget.** How many `Path` items can a scene hold before OBR degrades? This
-  bounds the segment-length knob.
+  bounds the segment-length knob. Note that item count and segment count are separable: a
+  single `Path` holds many `MOVE`-separated subpaths, so the visible segment set could be
+  rebuilt into a handful of `Path` items rather than toggling thousands. The wrinkle is that
+  fade is per-item via `PathStyle` opacity, so batching requires grouping segments into fade
+  cohorts. Measure before committing to either shape.
+- **Visibility fidelity vs. the GPU fog.** How close can CPU polygons get, and what `falloff`
+  cutoff reads best? See §1 — this is tuning, and it is the risk most likely to sink the look.
 - **Sepia palette and stroke weight.** Purely aesthetic, but worth an early visual spike —
   the whole feature lives or dies on whether it looks good.
 
@@ -295,10 +409,13 @@ keeping in the back pocket for a quick visual spike.
 
 ## Build order
 
-0. **Run the CORS probe.** Five minutes, and it determines whether steps 4+ target scene
-   assets or a file picker. Do this before writing anything else.
-1. Get `dynamic-fog` forked, building, and loading locally; add the dev log shim and its
-   Node receiver at the same time
+0. ~~Run the CORS probe.~~ **Done — clean.** Steps 4+ target scene assets directly.
+1. Scaffold a fresh Vite + React + TS extension against `@owlbear-rodeo/sdk`, building and
+   loading in a real room. Add the dev log shim and its Node receiver at the same time, plus
+   the CORS startup assertion reporting through it. Two things to get right here:
+   `vite.config.ts` needs `base: "/cartographers-fog/"` because project Pages serve from a
+   subpath, and Pages has to move from branch-deploy to a GitHub Actions workflow once the
+   branch holds source rather than built output.
 2. CPU visibility polygons from `Wall` items — vitest against fixture walls, then verify
    against the GPU fog visually
 3. Naive persistence: discovered region tracked, plain revealed areas, no sketch
