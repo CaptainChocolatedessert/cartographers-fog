@@ -32,9 +32,12 @@ follow:
   subscribe to `OBR.scene.local.onChange` — and since this extension's own output is local
   too, that subscription feeds back on itself unless redraws are gated on whether the relevant
   inputs actually changed.
-- **Dynamic Fog is a hard prerequisite on every client**, not just the GM's. A player without
-  it installed has no local walls, so nothing downstream can compute visibility for them. That
-  is a distribution constraint on the whole feature, not an implementation detail.
+- **Dynamic Fog has to be running on every client**, not just the GM's, since a client with no
+  local walls cannot compute visibility at all. In practice this costs nothing: extensions are
+  added to the *room* and Owlbear loads them for everyone, so the GM adding both covers the
+  whole table. Verified with a GM and a player client side by side — the player's machine
+  materialised the same walls and lights. A client already connected when an extension is
+  added does need to reload the room before it appears.
 
 The architecture below is read-only on Dynamic Fog's data. Visibility is computed from `Wall`
 items, the discovered region is stored in scene metadata under this extension's own namespace,
