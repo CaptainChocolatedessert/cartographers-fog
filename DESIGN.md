@@ -214,6 +214,85 @@ The candidate angles are identical, so one sweep yields both polygons.
 
 The fraction is an aesthetic knob, not a correctness one. Start around 0.75 and look at it.
 
+### Rendering modes for `sketch_region` — open, deferred to step 5
+
+**The constraint that governs all of this: `sketch_region` sits under the fog.** Owlbear's fog
+occludes the map in exactly the area we want to draw into, and this extension does not control
+the fog. So anything shown there must be drawn on a layer *above* it, and **nothing can be made
+to "show through"** — any terrain a player sees in a remembered area has to be redrawn by us.
+
+That divides the options by what they can actually put on screen, not by implementation taste.
+They are not mutually exclusive; a build could ship more than one as a user-selectable style.
+
+**1. Drawn marks — vector strokes** (the mode described in §2/§3/§6/§7). Traced outlines,
+perturbed for a hand-drawn wobble, reading as ink on darkness. Shows remembered *structure*,
+not terrain, which suits the aesthetic: the party's own map, not a view of the room. The only
+mode needing edge detection and contour tracing, and so the only one exposed to that risk —
+how tracing holds up on painted, textured or low-contrast maps is untested.
+
+**2. Map pixels — masked copy of the map.** The only way to show real terrain in a remembered
+area, and a genuinely different feature from mode 1 rather than a fallback for it: this is
+classic "explored areas stay visible" persistence, optionally recolored. Two implementations,
+with quite different risk:
+
+  - **Canvas composite → `Image` item.** Mask and recolor per pixel, giving a soft boundary and
+    true color transforms (desaturation, grain, paper texture). Costs an *encode* per update,
+    and depends on whether Owlbear renders an `Image` whose `url` is a `data:` URL — this is
+    **unverified**, and it gates the approach, since `buildImageUpload` into asset storage is
+    far too heavy for per-move updates. Ten-minute test; do it before committing.
+  - **CDN-cropped tiles.** Pre-slice the map into `Image` items whose URLs carry `?crop=`
+    (see "CDN image transforms"), then reveal by toggling `visible` per tile. No canvas, no
+    encoding, no `data:` URL question — updates are just visibility flags. Costs are item count
+    and one CDN fetch per tile. **Rejected on its own**: a whole-tile toggle does not merely
+    look blocky, it *shows map content the party never saw* — a secret door in the corner of a
+    revealed tile is a correctness bug that silently spoils a session, not a cosmetic one.
+  - **Tiles plus edge masking — preferred if mode 2 is built.** Combines the two above. Classify
+    every tile against `sketch_region` as fully inside, fully outside, or straddling the
+    boundary. Inside and outside tiles are handled by the cheap path (a `visible` toggle on a
+    CDN-cropped `Image`); only the straddling ring is canvas-composited with a per-pixel mask.
+    Correct by construction — interior tiles are safe by definition and partial tiles are masked
+    exactly — and cost scales with the region's **perimeter** rather than its area.
+
+    This is what makes mode 2 affordable at all. A single whole-map composite means re-encoding
+    ~16M pixels into a multi-megabyte `data:` URL on every token move; the boundary ring is a few
+    dozen small tiles instead.
+
+    Three notes. It does **not** avoid the `data:` URL question, only shrinks the payload —
+    `blob:` URLs cannot substitute, being scoped to the creating document's origin while the
+    renderer is the parent page on another origin. Tile classification is nearly free if
+    `discovered` is stored as a grid bitmask with tiles aligned to its cells, which is where the
+    encoding question was already leaning for unrelated reasons. And **seams are a real risk**:
+    adjacent tiles must align to the pixel or sub-pixel positioning leaves hairlines along every
+    edge, which would look worse than the blockiness being avoided — test early with a
+    deliberately visible checkerboard.
+
+    Two refinements worth having later: the inner boundary (edge of current vision) moves on
+    every token move while the outer frontier only changes when new ground is explored, so the
+    two can be updated at different rates; and since `discovered` only grows, a tile that becomes
+    fully interior can permanently discard its composited version and revert to the plain crop.
+
+  Note `Image` items have **no built-in tint, opacity or blend property** — checked
+  `ImageBuilder` and `GenericItemBuilder`, which expose only a bare `visible` toggle. Any real
+  color transform therefore requires the canvas route.
+
+**3. Flat region wash — vector fill.** Fill the `sketch_region` polygon with a translucent
+`Path` (`fillColor`, low `fillOpacity`, `fillRule` for its holes). Nearly free, since the region
+is already a polygon by the end of §4. But it shows only *where* the party has been, with no
+detail of any kind — it is a region marker, not a view of anything. **Not a substitute for
+modes 1 or 2, and it does not de-risk tracing**, because it does not do the same job. Its real
+use is as step 3's "plain revealed areas" visualization, where showing the tracked region and
+nothing else is exactly the point.
+
+All modes read the same `sketch_region`, so none of this blocks step 3, and the choice is
+better made once there is a traced map to look at — which is also when tracing quality becomes
+judgeable rather than theoretical.
+
+**Timing note (from the user, 2026-07-25):** the visible region only needs updating when a token
+*finishes* moving, not continuously while dragging. That removes the original objection to the
+canvas route — per-frame re-encoding — since a ~1s budget on move-end is generous for a
+composite, and a cross-fade between two `Image` items covers §7's fade without per-frame raster
+work.
+
 ### 5. Sync state, not items
 
 Do **not** push item updates over the network on every token move.
@@ -441,7 +520,9 @@ keeping in the back pocket for a quick visual spike.
 - **Discovered-region encoding.** Grid bitmask? Quadtree? Polygon union? Needs to be compact
   enough to live comfortably in scene metadata and cheap to test points against. The 16KB
   metadata cap tilts this toward a grid bitmask, which is also the cheapest to point-test;
-  polygon union is the most accurate and the most likely to blow the budget.
+  polygon union is the most accurate and the most likely to blow the budget. A bitmask also
+  makes tile classification trivial for the tiles-plus-edge-masking renderer, so two open
+  questions point the same way.
 - **Performance budget.** How many `Path` items can a scene hold before OBR degrades? This
   bounds the segment-length knob. Note that item count and segment count are separable: a
   single `Path` holds many `MOVE`-separated subpaths, so the visible segment set could be
@@ -465,6 +546,16 @@ keeping in the back pocket for a quick visual spike.
   cutoff reads best? See §1 — this is tuning, and it is the risk most likely to sink the look.
 - **Sepia palette and stroke weight.** Purely aesthetic, but worth an early visual spike —
   the whole feature lives or dies on whether it looks good.
+- **Rendering mode for `sketch_region`.** Drawn marks, a masked copy of the map, or both as
+  user-selectable styles. See "Rendering modes for `sketch_region`" above. Not blocking — step
+  3 works regardless — but worth deciding before step 5 wires masking to a specific renderer.
+  Remember that the region is *under the fog*, so no mode can reveal the map by uncovering it;
+  terrain has to be redrawn.
+- **Does an `Image` item accept a `data:` URL?** Gates the canvas-composite route entirely, and
+  is cheap to answer: build one local `Image` with a small `data:` URL and see whether it
+  renders. Worth doing opportunistically, well before step 5 depends on the answer. The
+  `?crop=` tile variant avoids the question but needs the CDN transform parameters to be
+  reliable, which is its own untested assumption.
 
 ---
 
@@ -479,7 +570,11 @@ keeping in the back pocket for a quick visual spike.
    branch holds source rather than built output.
 2. CPU visibility polygons from `Wall` items — vitest against fixture walls, then verify
    against the GPU fog visually
-3. Naive persistence: discovered region tracked, plain revealed areas, no sketch
+3. Naive persistence: discovered region tracked, plain revealed areas, no sketch. The flat
+   region wash (rendering mode 3) is what "plain revealed areas" means here — it needs nothing
+   beyond what this step already tracks, and showing the tracked region and nothing else is
+   exactly what is wanted for verifying it.
 4. Offline edge-trace → `Path` generation, run manually on one test map
-5. Wire the two together with per-segment masking
+5. Wire the two together with per-segment masking. Settle the rendering-mode decision here if
+   it is not already settled — see "Rendering modes for `sketch_region`".
 6. Wobble, sepia, dash, fade — the pass that makes it look hand-drawn
