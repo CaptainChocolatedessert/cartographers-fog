@@ -9,6 +9,7 @@ import OBR from "@owlbear-rodeo/sdk";
 import { installDevLog, devLog } from "./devlog";
 import { assertPixelAccess } from "./probe";
 import { installVisibilityOverlay } from "./debug/visibilityOverlay";
+import { probeStorageLimits } from "./debug/storageProbe";
 
 installDevLog();
 
@@ -32,6 +33,10 @@ OBR.onReady(async () => {
   // Development only — draws the CPU visibility polygons over the scene so they can be
   // compared against the GPU fog. No-ops in production builds.
   installVisibilityOverlay();
+
+  // Development only, one-shot. Measures the real storage limits several design decisions
+  // rest on. Cleans up everything it writes.
+  void probeStorageLimits();
 });
 
 async function runProbe(): Promise<void> {
