@@ -195,24 +195,32 @@ sketch_region     = discovered − currently_visible
 Only segments whose midpoint falls in `sketch_region` are shown. This is what keeps scribbles
 off areas the player can already see directly.
 
-### The two terms want different radii
+### Both terms use the full radius
 
-`attenuationRadius` is the outer edge of a light's falloff (see §1), which means the two uses of
-a visibility polygon prefer to err in opposite directions:
+`attenuationRadius` is the outer edge of a light's falloff (see §1), and **both `discovered` and
+`currently_visible` use all of it**.
 
-- **`currently_visible`** should over-estimate. Anything it misses becomes sketch drawn over
-  ground the player can plainly see — the artifact this whole design exists to avoid. Use the
-  full `attenuationRadius`.
-- **`discovered`** should under-estimate. At the outer fringe the map is barely perceptible, so
-  counting it as explored means the party "discovers" terrain nobody could actually make out.
-  Use some fraction of `attenuationRadius`.
+An earlier draft had `discovered` use a fraction, on the theory that the dim outer fringe should
+not count as explored. That was wrong, for two reasons:
 
-Conveniently the second polygon is nearly free. Occlusion is radial, so visibility at radius
-`r < R` is exactly visibility at radius `R` with each vertex distance clamped to `r` — the
-nearest hit along a ray is `min(wall, R)`, and clamping gives `min(wall, R, r) = min(wall, r)`.
-The candidate angles are identical, so one sweep yields both polygons.
+- **Walls, not distance, gate what was seen.** The visibility polygon is bounded by geometry, so
+  a generous radius cannot leak through a wall. All it adds is the far end of a corridor the
+  party could actually see down — which they did see. The "unintentional reveal" risk lives in
+  the renderer's mask precision, not here.
+- **The errors are wildly asymmetric.** Under-reporting leaves a permanent hole in the map, a
+  black patch in the middle of explored ground that clears only if someone deliberately walks
+  over there. Over-reporting produces a sketch of something glimpsed from a distance, which
+  nobody notices or objects to. The earlier draft optimised against the harmless error.
 
-The fraction is an aesthetic knob, not a correctness one. Start around 0.75 and look at it.
+If dimly-seen ground should eventually *look* different, that belongs in rendering, not
+tracking — fade the sketch by how well it was observed rather than withholding it. Doing that
+properly would mean recording an observation quality per cell rather than a boolean, which
+scene metadata now has ample room for (see "Storage limits"). Not needed for v1.
+
+Worth keeping in the back pocket: occlusion is radial, so visibility at radius `r < R` is
+exactly visibility at `R` with each vertex clamped to `r` — the nearest hit along a ray is
+`min(wall, R)`, and clamping gives `min(wall, R, r) = min(wall, r)`. One sweep therefore yields
+any smaller radius for free, should a use for one appear.
 
 ### Rendering modes for `sketch_region` — open, deferred to step 5
 
@@ -309,9 +317,114 @@ isn't: two clients doing read-modify-write against shared metadata can interleav
 overwrites bits the other just added. Single-writer sidesteps the problem entirely and costs
 nothing here.
 
-Scene metadata is reportedly capped at **16KB** (verify against the SDK docs at implementation
-time). This bounds the encoding question below — for scale, a 100×100 cell bitmask is about
-1.25KB raw, before any compression.
+### Storage limits — measured 2026-07-26, and the folklore was wrong
+
+This document previously recorded scene metadata as "reportedly capped at 16KB", and that
+number shaped the region encoding, the cell resolution, and the argument for storing the region
+in items instead. **It is not 16KB.** Measured in a live room by a probe that writes, reads
+back, and verifies:
+
+- **Scene metadata: no limit found at 512KB on a single key**, and 4 keys × 512KB (2MB total)
+  also succeeded. The probe ran out of sizes to try before the store ran out of room.
+- **It persists, and it reaches players.** A 256KB payload written by the GM in Firefox was read
+  back **byte-identical, tail marker intact, by a player client in Chrome** — a separate browser
+  process with a separate cache, so it made a genuine server round trip. This also settles a
+  larger question than storage: **scene metadata does reach player clients**, which §5's
+  share-state-render-locally architecture depends on entirely and which had never been verified.
+- **Per-key versus shared is still untested.** Since no single-key limit was found, N keys
+  succeeding shows only that the total fits — a shared cap larger than the total is equally
+  consistent. Do not repeat the mistake of concluding "per key" from this.
+
+**Consequence: the size anxiety driving the region encoding was unfounded.** A fine-resolution
+bitmask fits comfortably, and so does a polygon representation — which means storing the region
+as vector shapes no longer requires putting it in scene items to escape a cap. Metadata is
+roomy enough for either.
+
+**Encoded region sizes, measured (2026-07-26).** Simulated at the maximum resolution current
+settings allow (256×256 cells), stamping 64-gon visibility polygons rather than RLE-friendly
+rectangles. Encoded size scales with the region's **perimeter** (run transitions ≈ 2 bytes per
+run before base64), so fragmentation is the realistic worst case, not coverage:
+
+| Scenario | Coverage | Encoded |
+|---|---|---|
+| Compact random-walk exploration, 3200 stamps | 11.5% | 0.5KB |
+| Deliberately fragmented: 150 scattered rooms + 60 one-cell corridors | 25.1% | 3.7KB |
+| Pathological checkerboard (unreachable from rasterized polygons) | 50% | ~87KB |
+
+So realistic regions run 0.5–4KB against a measured metadata floor of 512KB per key — two
+orders of magnitude of headroom even in the fragmented case, and the unreachable pathological
+bound still fits six times over.
+
+### Masking cost — measured and fixed (2026-07-26)
+
+`sketch_region = discovered − currently_visible` runs on every render, so its cost bounds how
+fine the cell grid can be. Measured on a 256×256 grid at 22% coverage, subtracting two lights:
+
+| | 64-vertex polygons | 2755-vertex polygons |
+|---|---|---|
+| Original | 7.5ms | **134.9ms** |
+| Bounding box hoisted | 2.8ms | 3.6ms |
+| Loop inverted as well | 0.1ms | **0.7ms** |
+
+Two defects, both mine, worth understanding because the same shapes will recur:
+
+1. **`pointInPolygon` rebuilt its bounding box on every call.** The box exists as an early-out,
+   but recomputing it costs a full pass over the vertices *before* it can reject — so a cell
+   nowhere near the polygon still cost O(vertices). Real visibility polygons carry thousands of
+   vertices and this runs once per cell. The signature was diagnostic: 43× more vertices cost
+   18× more time, when a working early-out should have made vertex count nearly irrelevant.
+   It now takes an optional precomputed bounds, and hot callers hoist it.
+2. **The loop scanned the whole grid.** Inverting it — copy `discovered`, then clear what the
+   visible polygons cover — bounds the work by *visible area* instead of grid size, since a
+   cell outside every polygon's bounding box can never be cleared and need not be visited.
+
+**Consequence: masking no longer constrains cell resolution.** At 0.7ms for a realistic case,
+and with cost now scaling with visible area rather than total cells, quadrupling linear
+resolution to 1024×1024 lands around 11ms. The binding constraint on resolution is the item
+command limit in the renderer (below), not storage and not masking.
+
+The same hoisting applies to §3's per-segment masking, which will call `pointInPolygon` against
+these polygons thousands of times per update.
+
+### Items cap at exactly 8192 array entries
+
+Writing a `Path` with too many commands is rejected outright:
+
+```
+RecordValidationError: "JSON exceeds array length limit"
+```
+
+**The limit is 8192 commands, exactly** — 8192 accepted, 8193 refused, bisected to the single
+command. It is a fixed constant (2¹³), not a budget shared with the rest of the scene.
+
+An earlier revision of this document claimed the ceiling *moved* between runs, citing 7825 and
+8041. **That was wrong**, and the correction is worth recording because the failure mode is
+easy to repeat: the probe caught every exception and treated it as "too big", so Owlbear's
+`RateLimitHit` responses to rapid writes were misread as size rejections and drove the
+bisection to false floors. Once throttling was distinguished from validation failure, the
+boundary was identical across runs. **A diagnostic that cannot tell its failure modes apart
+will invent findings.**
+
+Two consequences, and the second is easy to miss:
+
+- Any large emitted geometry must be **chunked across several items**. 8192 is exact, so a
+  margin is only needed for the per-run variation in what we generate, not for the limit
+  itself — but rejection should still be handled as an ordinary outcome rather than an
+  exception.
+- **This constrains rendering, not just storage.** A single visibility polygon already reaches
+  ~2,755 vertices in a modest scene, and the region wash emits ~5 commands per merged run — a
+  fragmented region at 256×256 produces roughly 1,800 runs, or ~9,000 commands, which already
+  exceeds the limit. **The wash renderer needs chunking from the outset**, not as a later
+  scaling concern.
+
+### Writes are rate limited
+
+Rapid writes are refused with `RateLimitHit: "Too many requests"`, distinct from validation
+failure. This matters for §5's persistence design: debouncing the metadata write is not merely
+network politeness, it avoids an enforced limiter that will reject us outright. Treat write
+failure as an expected outcome with backoff and retry, and distinguish `RateLimitHit` from
+`RecordValidationError` at every call site — retrying a size failure is futile, and giving up on
+a throttle loses data.
 
 ### Editing the fog directly — possible, but writes to the GM's own content
 
@@ -598,12 +711,14 @@ keeping in the back pocket for a quick visual spike.
 ## Open questions
 
 - ~~**CORS.**~~ Resolved — clean. See the dedicated section above.
-- **Discovered-region encoding.** Grid bitmask? Quadtree? Polygon union? Needs to be compact
-  enough to live comfortably in scene metadata and cheap to test points against. The 16KB
-  metadata cap tilts this toward a grid bitmask, which is also the cheapest to point-test;
-  polygon union is the most accurate and the most likely to blow the budget. A bitmask also
-  makes tile classification trivial for the tiles-plus-edge-masking renderer, so two open
-  questions point the same way.
+- **Discovered-region encoding.** Grid bitmask? Quadtree? Polygon union? ~~The 16KB metadata cap
+  tilts this toward a grid bitmask.~~ **That cap does not exist** — see "Storage limits" above,
+  where no metadata limit was found below 512KB per key. Size no longer decides this, so it
+  comes down to what each form is good at: a bitmask is O(1) to point-test, which §3's
+  per-segment masking leans on heavily, and makes tile classification trivial; polygons are
+  resolution-independent, which matters if the masked-map renderer wins, since there the region
+  boundary *is* the visible edge and cell quantisation shows as stair-steps. The likely
+  endpoint is polygons as the stored form with a bitmask derived locally for cheap queries.
 - **Performance budget.** How many `Path` items can a scene hold before OBR degrades? This
   bounds the segment-length knob. Note that item count and segment count are separable: a
   single `Path` holds many `MOVE`-separated subpaths, so the visible segment set could be
