@@ -14,10 +14,27 @@ Owlbear's line-of-sight rendering. This extension reads that output and adds the
 sketch on top.
 
 This works because Dynamic Fog does not invent a private data format. `Wall` and `Light` are
-first-class SDK item types living in ordinary scene items, and any installed extension can read
-all scene items regardless of which extension created them. There is prior art: desain's
-visibility extension already consumes walls from Dynamic Fog *and* Smoke & Spectre without
-forking either.
+first-class SDK item types, and any installed extension can read them regardless of which
+extension created them. There is prior art: desain's visibility extension already consumes
+walls from Dynamic Fog *and* Smoke & Spectre without forking either.
+
+**Where those items actually live — verified in a room, 2026-07-25.** Dynamic Fog keeps the
+shared, networked representation as `LINE` and `PATH` items on the `FOG` layer, and each client
+materialises its own **local** `WALL` and `LIGHT` items from them. Watching an item census
+while drawing makes it unambiguous: every new networked `LINE` produced exactly one new local
+`WALL`, and the lights are local too.
+
+So walls must be read from **`OBR.scene.local`**, not `OBR.scene.items`. Querying the scene
+alone returns nothing, silently, in a room where the fog is plainly working. Two consequences
+follow:
+
+- `OBR.scene.items.onChange` never fires for them. Anything reacting to wall changes must also
+  subscribe to `OBR.scene.local.onChange` — and since this extension's own output is local
+  too, that subscription feeds back on itself unless redraws are gated on whether the relevant
+  inputs actually changed.
+- **Dynamic Fog is a hard prerequisite on every client**, not just the GM's. A player without
+  it installed has no local walls, so nothing downstream can compute visibility for them. That
+  is a distribution constraint on the whole feature, not an implementation detail.
 
 The architecture below is read-only on Dynamic Fog's data. Visibility is computed from `Wall`
 items, the discovered region is stored in scene metadata under this extension's own namespace,
@@ -112,6 +129,10 @@ coordinate and returns a `half4` color.
 `OBR.scene.local.addItems()` adds items visible only to the local client, with no network
 sync. This is central to the architecture below.
 
+It is also where Dynamic Fog's `Wall` and `Light` items live — see "Where those items actually
+live" above. `OBR.scene.local.getItems()` returns local items created by *any* extension on
+this client, not just your own, which is what makes reading them possible at all.
+
 ---
 
 ## Architecture
@@ -125,13 +146,18 @@ persistence at all, not just for masking.
 Prior art exists — desain's visibility extension does exactly this, consuming walls from
 Dynamic Fog / Smoke & Spectre.
 
-**This is the project's central technical risk.** The reference implementation — Owlbear's own
-renderer — is closed source, so our CPU polygons are matching something nobody can read. `Light`
-carries `falloff`, a gradient with no polygon equivalent, so "visible" requires choosing a
-cutoff. Any mismatch shows up as sketch strokes bleeding into areas the player can plainly see,
-which is exactly the artifact the whole design is built to avoid. Budget real time for visual
-comparison against the GPU fog, and treat it as tuning rather than a correctness bug to be
-solved once. A fork would not have avoided this.
+This was recorded as the project's central technical risk: the reference implementation is
+Owlbear's closed-source renderer, so the CPU polygons are matching something nobody can read,
+and `falloff` is a gradient with no polygon equivalent.
+
+**Largely retired — verified in a room, 2026-07-25.** Drawn as an overlay on top of the live
+fog, the computed polygons track the actual visibility boundary, update correctly as a token
+moves, and — the useful part — with a fading light the polygon matches the **outer** extent of
+the fade. So `Light.attenuationRadius` is the outer edge of the falloff, not its midpoint or
+its bright core, and no cutoff has to be invented.
+
+Keep the debug overlay working. This is tuning that will need rechecking whenever the sweep
+changes, not a question answered once and for all.
 
 ### 2. Trace edges once, not per frame
 
@@ -165,6 +191,25 @@ sketch_region     = discovered − currently_visible
 
 Only segments whose midpoint falls in `sketch_region` are shown. This is what keeps scribbles
 off areas the player can already see directly.
+
+### The two terms want different radii
+
+`attenuationRadius` is the outer edge of a light's falloff (see §1), which means the two uses of
+a visibility polygon prefer to err in opposite directions:
+
+- **`currently_visible`** should over-estimate. Anything it misses becomes sketch drawn over
+  ground the player can plainly see — the artifact this whole design exists to avoid. Use the
+  full `attenuationRadius`.
+- **`discovered`** should under-estimate. At the outer fringe the map is barely perceptible, so
+  counting it as explored means the party "discovers" terrain nobody could actually make out.
+  Use some fraction of `attenuationRadius`.
+
+Conveniently the second polygon is nearly free. Occlusion is radial, so visibility at radius
+`r < R` is exactly visibility at radius `R` with each vertex distance clamped to `r` — the
+nearest hit along a ray is `min(wall, R)`, and clamping gives `min(wall, R, r) = min(wall, r)`.
+The candidate angles are identical, so one sweep yields both polygons.
+
+The fraction is an aesthetic knob, not a correctness one. Start around 0.75 and look at it.
 
 ### 5. Sync state, not items
 
@@ -400,6 +445,19 @@ keeping in the back pocket for a quick visual spike.
   rebuilt into a handful of `Path` items rather than toggling thousands. The wrinkle is that
   fade is per-item via `PathStyle` opacity, so batching requires grouping segments into fade
   cohorts. Measure before committing to either shape.
+
+  **First real measurement (2026-07-25, modest hand-drawn scene):** 37 walls flatten to **994
+  segments** — Dynamic Fog's walls are dense polylines averaging ~27 points, not a handful of
+  long straight runs. One light took **46ms** for 2755 polygon vertices, i.e. ~2.7M
+  ray/segment tests. That is acceptable for a state-change computation but scales linearly
+  with lights: four light-bearing tokens would be ~180ms per move, which would be felt.
+
+  The visibility sweep is therefore the first thing to optimise, well before item counts
+  matter. Options in rough order of payoff: a spatial index over segments so each ray tests
+  a fraction of them rather than all 994; the classic O(n log n) angular sweep instead of
+  per-endpoint ray casting; simplifying wall polylines once at load; and lowering
+  `arcSamples`. Do not optimise blind — the dev-log line reports segments, vertices and
+  elapsed ms on every redraw.
 - **Visibility fidelity vs. the GPU fog.** How close can CPU polygons get, and what `falloff`
   cutoff reads best? See §1 — this is tuning, and it is the risk most likely to sink the look.
 - **Sepia palette and stroke weight.** Purely aesthetic, but worth an early visual spike —
