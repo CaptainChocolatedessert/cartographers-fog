@@ -313,6 +313,50 @@ Scene metadata is reportedly capped at **16KB** (verify against the SDK docs at 
 time). This bounds the encoding question below — for scale, a 100×100 cell bitmask is about
 1.25KB raw, before any compression.
 
+### Editing the fog directly — possible, but writes to the GM's own content
+
+Cutting holes in the fog over explored ground would let the real map show through natively —
+no raster copy, no `data:` URLs, no tiles, no seams. It also rescues the cheap wash: a
+translucent `Path` over the region only fails to reveal terrain *while the fog is intact*, so
+fog-hole plus wash gives revealed-and-tinted map for almost nothing. That is a genuinely
+simpler route to what the masked-map mode wants, and worth understanding before dismissing.
+
+Mechanically it is available. `SceneFogApi` carries only global appearance — `getColor`,
+`setColor`, `strokeWidth`, `filled` — but fog *geometry* is ordinary items on the `FOG` layer
+(`PATH:FOG` and `LINE:FOG` in an item census), reachable through `OBR.scene.items`, and the
+`Permission` enum has explicit `FOG_CREATE` / `FOG_UPDATE` / `FOG_DELETE`.
+
+**Not recommended, on four counts:**
+
+1. **It mutates the GM's authored content.** Fog shapes are user-drawn, networked and saved
+   with the scene. Everything else in this design is additive *local* items that vanish
+   cleanly when the extension is removed. Editing fog means a crash mid-update, an uninstall,
+   or a runaway bug permanently alters work the GM did by hand, with no way back. This is a
+   different category of risk from anything else here, and it is why the architecture is
+   otherwise read-only on data this extension does not own.
+2. **It is networked on most moves** — writing scene items as the party explores is exactly
+   what §5 exists to avoid.
+3. **Two writers.** Dynamic Fog regenerates fog and walls from its own inputs; we would be
+   editing items it manages.
+4. **Fog appearance is global.** `setColor` / `setFilled` apply scene-wide, so fog editing is
+   binary — revealed or not. It cannot make explored ground *look* different from
+   currently-visible ground, which is the whole point, hence needing an overlay regardless.
+
+**Two tests, either of which could change this verdict:**
+
+- **Does editing a fog shape change the derived walls?** Dynamic Fog documents that it creates
+  walls from fog shapes. If that is live, punching a hole to reveal a room would generate walls
+  around the hole and *block line of sight through it* — revealing an area would wall it off,
+  which makes the whole approach unusable rather than merely inadvisable. Test: in a scratch
+  scene, delete or reshape one `PATH:FOG` item and watch whether the local `WALL:FOG` count
+  moves. Five minutes.
+- **Does OBR support additive reveal-shapes we create and own?** If holes can be expressed as
+  *new* fog items belonging to this extension rather than edits to the GM's, objection 1
+  largely dissolves — our items delete cleanly and the GM's originals are never touched. That
+  would make this attractive again, so it is worth checking before committing to the raster
+  route. Note `Path.fillRule` supports `evenodd`, which creates holes *within a single path*;
+  whether OBR composites separate fog items the same way is the open part.
+
 ### Display options are GM-controlled and ride shared metadata
 
 If the rendering modes above become user-selectable, the controls belong to the GM alone — the
@@ -593,6 +637,13 @@ keeping in the back pocket for a quick visual spike.
   renders. Worth doing opportunistically, well before step 5 depends on the answer. The
   `?crop=` tile variant avoids the question but needs the CDN transform parameters to be
   reliable, which is its own untested assumption.
+- **Can fog be revealed without mutating the GM's fog shapes?** Two five-minute tests, both in
+  a scratch scene, and together they decide whether the fog route is viable at all — see
+  "Editing the fog directly". First: does editing a fog shape change the walls Dynamic Fog
+  derives from it? If yes, revealing an area would wall it off and the approach is dead.
+  Second: does OBR composite *separate* fog items such that an extension-owned shape can cut a
+  hole without touching the GM's originals? If yes, the fog route becomes the cheapest way to
+  show real terrain and displaces most of the raster design.
 
 ---
 
