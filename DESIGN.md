@@ -313,6 +313,43 @@ Scene metadata is reportedly capped at **16KB** (verify against the SDK docs at 
 time). This bounds the encoding question below — for scale, a 100×100 cell bitmask is about
 1.25KB raw, before any compression.
 
+### Display options are GM-controlled and ride shared metadata
+
+If the rendering modes above become user-selectable, the controls belong to the GM alone — the
+sketch is a shared table aesthetic, not a per-player preference. That raises the obvious
+question of how a GM's choice reaches player clients that render independently, and the answer
+is that it needs no new machinery: it is the same shared-state mechanism §5 already uses.
+
+- `OBR.player.getRole()` returns `"GM" | "PLAYER"` — gate the UI on it.
+- `OBR.room.setMetadata()` writes the settings; `onMetadataChange()` fires on **every** client
+  automatically. No broadcast to design, no handshake.
+- A client joining mid-session reads `OBR.room.getMetadata()` at startup, so there is no
+  late-joiner problem either.
+
+Settings are tens of bytes and change only when the GM moves a control, so unlike the
+discovered region this costs nothing in traffic.
+
+**Use room metadata, not scene metadata.** A GM's aesthetic preference sensibly follows them
+between scenes, whereas the discovered region is necessarily per-scene. More practically, it
+keeps settings out of the 16KB *scene* metadata budget that the discovered region is already
+the main claimant on. Per-scene overrides can be layered on later if, say, a snow map wants a
+different palette from a dungeon.
+
+Two things not to mistake:
+
+- **GM-only UI is not GM-only write.** The `Permission` enum governs item operations by layer
+  (`FOG_CREATE`, `DRAWING_UPDATE`, …) and says nothing about metadata, so any client can call
+  `room.setMetadata` whatever its role. Hiding the controls is a convention, not a boundary —
+  fine for a cooperative tool, but the GM's client should read-modify-write its key rather than
+  blind-overwrite.
+- **Tolerate unknown values.** Every client loads the same deployed build, so skew only happens
+  when a deploy lands mid-session and some clients have not reloaded. A `mode ?? DEFAULT_MODE`
+  fallback turns "player sees a crash" into "player sees the default style" for free.
+
+Worth knowing for later: `OBR.player.setMetadata` is per-player and synced, so a personal
+override on top of the GM's shared style — an accessibility palette, or turning the sketch down
+because it distracts — has a natural home whenever that is wanted. Not needed for v1.
+
 ### 6. Squiggle noise must be static
 
 Seed the wobble from a hash of world position, **never** from the `time` uniform. Animated
