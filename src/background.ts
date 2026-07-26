@@ -15,17 +15,23 @@ installDevLog();
 OBR.onReady(async () => {
   devLog("info", "Cartographer's Fog: background ready");
 
+  // Subscribe BEFORE the first check, not after. A scene that becomes ready in the window
+  // between checking `isReady()` and subscribing produces no transition to observe, and the
+  // probe then never runs at all — silently, with no error. Observed happening
+  // intermittently on real loads. Subscribing first cannot miss the transition; the probe
+  // is idempotent per map, so the overlap is harmless.
+  //
+  // Re-running on scene change is wanted anyway: a new scene can bring in a map from a
+  // different asset origin.
+  OBR.scene.onReadyChange((ready) => {
+    if (ready) void runProbe();
+  });
+
   await runProbe();
 
   // Development only — draws the CPU visibility polygons over the scene so they can be
   // compared against the GPU fog. No-ops in production builds.
   installVisibilityOverlay();
-
-  // Scenes can be swapped without reloading the extension, and a scene change can bring
-  // in a map from a different asset origin, so re-assert rather than trusting startup.
-  OBR.scene.onReadyChange((ready) => {
-    if (ready) void runProbe();
-  });
 });
 
 async function runProbe(): Promise<void> {

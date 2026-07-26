@@ -59,6 +59,16 @@ function withCacheBust(url: string): string {
   }
 }
 
+/**
+ * The last map URL successfully probed.
+ *
+ * Callers may invoke this more than once for the same scene — deliberately, since the
+ * alternative is a check-then-subscribe race that can skip the probe entirely (see
+ * background.ts). Keying on the URL makes repeats free while still re-probing when a new
+ * scene brings in a map from a different origin.
+ */
+let lastProbedUrl: string | null = null;
+
 /** Probe the current scene's map image, reporting through the dev log. */
 export async function assertPixelAccess(): Promise<void> {
   if (!(await OBR.scene.isReady())) {
@@ -76,6 +86,8 @@ export async function assertPixelAccess(): Promise<void> {
   }
 
   const url = map.image.url;
+  if (url === lastProbedUrl) return;
+  lastProbedUrl = url;
   const outcome = await probeImageUrl(url);
 
   if (outcome === "clean") {

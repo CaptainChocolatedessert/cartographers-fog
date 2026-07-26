@@ -27,7 +27,13 @@ Not yet installable. Once there is a release, the extension is added in Owlbear 
 https://captainchocolatedessert.github.io/cartographers-fog/manifest.json
 ```
 
-Cartographer's Fog is a companion to Dynamic Fog, not a replacement for it — install both.
+Cartographer's Fog is a companion to
+[Dynamic Fog](https://extensions.owlbear.rodeo/dynamic-fog), not a replacement for it.
+
+**Every player needs both extensions installed, not just the GM.** Owlbear does not push a
+GM's extensions out to players, and each client computes and draws its own sketch locally from
+the walls Dynamic Fog places on that machine. A player missing either extension simply sees
+ordinary fog.
 
 ## Development
 
