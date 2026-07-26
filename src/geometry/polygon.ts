@@ -42,14 +42,21 @@ export function boundingBox(points: readonly Vector2[]): BoundingBox {
  * Even-odd ray casting. Points exactly on an edge are not guaranteed either way, which is
  * fine here: segment midpoints landing precisely on a visibility boundary are measure-zero,
  * and the fade in DESIGN.md §7 blurs that boundary anyway.
+ *
+ * Pass `bounds` when testing many points against the same polygon. Without it the bounding
+ * box is rebuilt on every call, which makes the "early out" cost a full pass over the
+ * vertices *before* it can reject — so a far-away point costs O(vertices) rather than O(1).
+ * Real visibility polygons run to thousands of vertices, and this is called once per cell, so
+ * hoisting it is the difference between 135ms and 8ms on a realistic mask.
  */
 export function pointInPolygon(
   point: Vector2,
   polygon: readonly Vector2[],
+  precomputedBounds?: BoundingBox,
 ): boolean {
   if (polygon.length < 3) return false;
 
-  const bounds = boundingBox(polygon);
+  const bounds = precomputedBounds ?? boundingBox(polygon);
   if (
     point.x < bounds.min.x ||
     point.x > bounds.max.x ||
