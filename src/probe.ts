@@ -81,10 +81,13 @@ export async function assertPixelAccess(): Promise<void> {
   if (outcome === "clean") {
     devLog("info", `CORS probe: CLEAN (${safeHost(url)}) — pixel access confirmed`);
   } else {
-    devLog(
-      "error",
-      `CORS probe: ${outcome.toUpperCase()} for ${url} — pixel access unavailable. ` +
-        `The vector route assumes this passes; see DESIGN.md "Fallback if pixel access ever breaks".`,
+    // Deliberately console.error rather than devLog: this is the one message that must
+    // survive into production builds, where devLog compiles away to nothing. The dev shim
+    // wraps console.error, so it still reaches dev.log during development.
+    console.error(
+      `Cartographer's Fog — CORS probe: ${outcome.toUpperCase()} for ${url}. ` +
+        `Map pixels are unreadable, so tracing cannot run. ` +
+        `See DESIGN.md, "Fallback if pixel access ever breaks".`,
     );
   }
 }

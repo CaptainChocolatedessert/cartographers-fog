@@ -8,6 +8,7 @@
 import OBR from "@owlbear-rodeo/sdk";
 import { installDevLog, devLog } from "./devlog";
 import { assertPixelAccess } from "./probe";
+import { installVisibilityOverlay } from "./debug/visibilityOverlay";
 
 installDevLog();
 
@@ -15,6 +16,10 @@ OBR.onReady(async () => {
   devLog("info", "Cartographer's Fog: background ready");
 
   await runProbe();
+
+  // Development only — draws the CPU visibility polygons over the scene so they can be
+  // compared against the GPU fog. No-ops in production builds.
+  installVisibilityOverlay();
 
   // Scenes can be swapped without reloading the extension, and a scene change can bring
   // in a map from a different asset origin, so re-assert rather than trusting startup.
