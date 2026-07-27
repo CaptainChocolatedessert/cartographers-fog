@@ -48,7 +48,16 @@ import { distance, type Vector2 } from "../geometry/vector";
 import { devLog } from "../devlog";
 import type { CellGrid } from "./cellGrid";
 
-/** Wait this long after the last change before writing. Also keeps us under the rate limit. */
+/**
+ * Wait this long after movement stops before writing.
+ *
+ * Debounced against *movement*, not against gaining cells. Those differ during a slow drag: the
+ * track flushes whenever no point has been recorded for a moment, so a leisurely drag produces a
+ * run of small flushes, and debouncing on those wrote metadata five times in eleven seconds.
+ * Writes are rate limited by Owlbear, and each one also re-renders the wash — main-page work
+ * contending with the very round trips the poll depends on. Deferring while a token is still
+ * moving collapses that to a single write once it settles.
+ */
 const PERSIST_DEBOUNCE_MS = 800;
 
 /**
@@ -118,6 +127,13 @@ let polling = false;
 
 /** Guards the sweep pass, which is long-running and yields partway through. */
 let flushing = false;
+
+/**
+ * Whether the region has grown since it was last written. Kept separate from the timer so that
+ * deferring a write during movement cannot lose one: the flag survives any number of
+ * reschedules, and a failed write leaves it set so the next settle tries again.
+ */
+let regionDirty = false;
 
 /** A recorded position, carrying when it was taken so sampling cadence can be measured. */
 interface TrackPoint {
@@ -212,6 +228,7 @@ async function teardownScene(): Promise<void> {
 
   if (persistTimer !== undefined) clearTimeout(persistTimer);
   persistTimer = undefined;
+  regionDirty = false;
 
   if (pollTimer !== undefined) clearInterval(pollTimer);
   pollTimer = undefined;
@@ -295,6 +312,11 @@ async function pollMotion(): Promise<void> {
       if (buffer) buffer.push(point);
       else trajectory.set(light.id, [point]);
       lastRecordedAt.set(light.id, now);
+
+      // Movement observed, so push any pending write further out. This is what makes the write
+      // wait for the token to settle rather than firing between the small flushes a slow drag
+      // produces.
+      if (regionDirty) schedulePersist();
     }
 
     const due = [...trajectory.entries()]
@@ -400,6 +422,7 @@ async function flushTracks(lightIds: string[]): Promise<void> {
     }
 
     if (countSet(discovered) > before) {
+      regionDirty = true;
       schedulePersist();
       void render();
     }
@@ -491,6 +514,7 @@ export async function clearDiscoveredRegion(): Promise<void> {
 
   if (persistTimer !== undefined) clearTimeout(persistTimer);
   persistTimer = undefined;
+  regionDirty = false;
 
   discovered = createMask(grid);
   lastSampled.clear();
@@ -503,9 +527,14 @@ export async function clearDiscoveredRegion(): Promise<void> {
 }
 
 async function persist(): Promise<void> {
-  if (!discovered || !isGm) return;
+  if (!discovered || !isGm || !regionDirty) return;
 
   const cells = countSet(discovered);
   const ok = await writeRegion(discovered);
+
+  // Cleared only on success. A failed write leaves the region dirty so the next time a token
+  // settles it is tried again, rather than the discovered ground being silently dropped.
+  if (ok) regionDirty = false;
+
   devLog("info", `region: ${ok ? "persisted" : "FAILED to persist"} ${cells} cells`);
 }
