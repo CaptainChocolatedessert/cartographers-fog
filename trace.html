@@ -133,15 +133,26 @@
         min-height: 1.2em;
       }
       main {
-        overflow: auto;
         padding: 1rem;
-        display: grid;
-        place-items: start center;
+        overflow: hidden;
+        display: block;
+        height: 100vh;
+        box-sizing: border-box;
+      }
+      /*
+        The canvas is sized to this box and the map is drawn into it under a view transform,
+        rather than the canvas being sized to the image — that is what lets zoom redraw the
+        linework as vectors instead of magnifying pixels.
+      */
+      #viewport {
+        width: 100%;
+        height: 100%;
+        border: 1px solid var(--rule);
+        overflow: hidden;
+        touch-action: none;
       }
       canvas {
-        max-width: 100%;
-        border: 1px solid var(--rule);
-        image-rendering: pixelated;
+        display: block;
       }
     </style>
   </head>
@@ -339,6 +350,14 @@
         <label
           ><input type="checkbox" id="showMidpoints" /> Segment midpoints</label
         >
+        <p style="margin: 0.6rem 0 0">
+          <button id="fit">Fit to window</button>
+          <span class="value" id="zoomValue">100%</span>
+        </p>
+        <p class="hint">
+          Scroll to zoom, drag to pan, double-click to fit. Strokes are redrawn as vectors at
+          any zoom; the map underneath is the full-resolution source, not the traced copy.
+        </p>
       </fieldset>
 
       <p id="status"></p>
@@ -346,7 +365,9 @@
       <div id="stats"></div>
     </aside>
 
-    <main><canvas id="canvas" width="800" height="600"></canvas></main>
+    <main>
+      <div id="viewport"><canvas id="canvas"></canvas></div>
+    </main>
 
     <script type="module" src="/src/debug/traceHarness.ts"></script>
   </body>

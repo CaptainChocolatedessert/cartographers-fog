@@ -16,6 +16,12 @@
  * the author's `VTT_Maps`, and the reason its tuning survives a change of map resolution.
  * The pipeline itself stays in pixel space and knows nothing about grids.
  *
+ * ## Tracing and painting are separate
+ *
+ * A trace costs a couple of hundred milliseconds, so panning could not re-run it. Everything
+ * derived from the image is computed once in `recompute` and cached; `paint` only draws that
+ * cache under the current view transform. Which controls belong to which is `VIEW_CONTROLS`.
+ *
  * The URL field also exercises the real cross-origin path against Owlbear's CDN — paste an
  * asset URL from a room and a `SecurityError` here would mean the CORS result recorded in
  * DESIGN.md has changed.
@@ -35,12 +41,42 @@ import { chunkSegments } from "../trace/strokeChunks";
 
 const canvas = element<HTMLCanvasElement>("canvas");
 const context = canvas.getContext("2d")!;
+const viewport = element<HTMLElement>("viewport");
 const statusLine = element<HTMLParagraphElement>("status");
 const warningLine = element<HTMLParagraphElement>("warning");
 const statsBlock = element<HTMLDivElement>("stats");
+const zoomReadout = element<HTMLSpanElement>("zoomValue");
+
+/** Controls that only change what is drawn, never what is traced. */
+const VIEW_CONTROLS = new Set([
+  "background",
+  "showLines",
+  "showSegments",
+  "showMidpoints",
+]);
+
+const MIN_SCALE = 0.05;
+const MAX_SCALE = 64;
 
 /** The map, at whatever resolution it was loaded. Traced from a downscaled copy. */
 let source: HTMLImageElement | HTMLCanvasElement | null = null;
+
+interface Traced {
+  readonly traceCanvas: HTMLCanvasElement;
+  readonly pixels: PixelImage;
+  readonly options: TraceOptions;
+  readonly result: ReturnType<typeof traceImage>;
+  /** Lazily built previews of the intermediate stages, keyed by background choice. */
+  readonly layers: Map<string, HTMLCanvasElement>;
+}
+
+let traced: Traced | null = null;
+
+/**
+ * Screen position of the traced image: `screen = (trace - offset) * scale`, in CSS pixels.
+ * Held in trace-image coordinates so the geometry can be drawn untransformed.
+ */
+const view = { scale: 1, offsetX: 0, offsetY: 0 };
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -63,7 +99,7 @@ function checked(id: string): boolean {
 /** Pixels per grid square *in the traced image*, after downscaling. */
 function pixelsPerGrid(traceWidth: number): number {
   if (!source) return number("pixelsPerGrid");
-  const scale = traceWidth / source.width;
+  const scale = Math.min(traceWidth, source.width) / source.width;
   return Math.max(1, number("pixelsPerGrid") * scale);
 }
 
@@ -113,7 +149,7 @@ function toTraceCanvas(
   return scaled;
 }
 
-function render(): void {
+function recompute(): void {
   if (!source) return;
 
   element<HTMLFieldSetElement>("contourGroup").hidden =
@@ -121,8 +157,8 @@ function render(): void {
   element<HTMLFieldSetElement>("centerlineGroup").hidden =
     choice("mode") !== "centerline";
 
-  const traceWidth = number("traceWidth");
-  const traceCanvas = toTraceCanvas(source, traceWidth);
+  const previousWidth = traced?.traceCanvas.width ?? 0;
+  const traceCanvas = toTraceCanvas(source, number("traceWidth"));
   const traceContext = traceCanvas.getContext("2d")!;
 
   let pixels: PixelImage;
@@ -141,19 +177,30 @@ function render(): void {
     return;
   }
 
-  const perGrid = pixelsPerGrid(traceWidth);
+  const perGrid = pixelsPerGrid(traceCanvas.width);
   const options = readOptions(perGrid);
   const result = traceImage(pixels, options);
 
-  canvas.width = traceCanvas.width;
-  canvas.height = traceCanvas.height;
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  traced = { traceCanvas, pixels, options, result, layers: new Map() };
 
-  drawBackground(traceCanvas, pixels, options);
-  if (checked("showLines")) drawSegments(result.segments);
-  if (checked("showMidpoints")) drawMidpoints(result.segments);
+  // Changing the trace width changes the coordinate system the view is expressed in. Rescale
+  // rather than re-fit, so tuning the resolution does not throw away where you were looking.
+  if (previousWidth > 0 && previousWidth !== traceCanvas.width) {
+    const ratio = traceCanvas.width / previousWidth;
+    view.scale /= ratio;
+    view.offsetX *= ratio;
+    view.offsetY *= ratio;
+  }
 
+  reportStats(perGrid);
+  paint();
+}
+
+function reportStats(perGrid: number): void {
+  if (!traced) return;
+  const { result, options } = traced;
   const { stats } = result;
+
   const items = chunkSegments(result.segments).length;
   const commands = result.segments.reduce(
     (sum, segment) => sum + segment.points.length,
@@ -182,8 +229,8 @@ function render(): void {
     `chop ms     ${stats.chopMs.toFixed(1)}`,
     `total ms    ${stats.totalMs.toFixed(1)}`,
   );
-  statsBlock.textContent = lines.join("\n");
 
+  statsBlock.textContent = lines.join("\n");
   warningLine.textContent = diagnose(options, stats, perGrid);
 }
 
@@ -216,22 +263,71 @@ function diagnose(
   return "";
 }
 
-function drawBackground(
-  traceCanvas: HTMLCanvasElement,
-  pixels: PixelImage,
-  options: TraceOptions,
-): void {
-  const background = choice("background");
-  if (background === "none") return;
+// -------------------------------------------------------------------------------------
+// Painting
+// -------------------------------------------------------------------------------------
 
-  if (background === "map") {
-    context.drawImage(traceCanvas, 0, 0);
+function paint(): void {
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(viewport.clientWidth));
+  const height = Math.max(1, Math.round(viewport.clientHeight));
+
+  if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+  }
+
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  zoomReadout.textContent = `${(view.scale * 100).toFixed(0)}%`;
+
+  if (!traced || !source) return;
+
+  const k = view.scale * ratio;
+  context.setTransform(k, 0, 0, k, -view.offsetX * k, -view.offsetY * k);
+
+  drawBackground();
+  // Widths are divided by the scale so a stroke keeps its weight on screen rather than
+  // fattening as you zoom — what is being judged is where the line is, not how thick.
+  if (checked("showLines")) drawSegments(traced.result.segments, view.scale);
+  if (checked("showMidpoints")) drawMidpoints(traced.result.segments, view.scale);
+}
+
+function drawBackground(): void {
+  if (!traced || !source) return;
+
+  const kind = choice("background");
+  if (kind === "none") return;
+
+  const { traceCanvas } = traced;
+
+  if (kind === "map") {
+    // The full-resolution source rather than the traced copy, so zooming in compares the
+    // strokes against the real map instead of against the downscale they came from.
+    context.imageSmoothingEnabled = true;
+    context.drawImage(source, 0, 0, traceCanvas.width, traceCanvas.height);
     return;
   }
 
-  if (background === "field") {
-    const field = buildField(pixels, options);
-    const image = context.createImageData(field.width, field.height);
+  // Stage previews are one pixel per traced pixel; keep them crisp so a skeleton reads as
+  // the pixels it is.
+  context.imageSmoothingEnabled = view.scale < 1;
+  context.drawImage(layerFor(kind), 0, 0);
+}
+
+/** Build a preview of an intermediate stage once, then reuse it across paints. */
+function layerFor(kind: string): HTMLCanvasElement {
+  const cached = traced!.layers.get(kind);
+  if (cached) return cached;
+
+  const { pixels, options } = traced!;
+  const field = buildField(pixels, options);
+
+  let image: ImageData;
+  if (kind === "field") {
+    image = new ImageData(field.width, field.height);
     for (let i = 0; i < field.data.length; i++) {
       const level = Math.round(255 * clamp01(field.data[i]!));
       const p = i * 4;
@@ -240,21 +336,23 @@ function drawBackground(
       image.data[p + 2] = level;
       image.data[p + 3] = 255;
     }
-    context.putImageData(image, 0, 0);
-    return;
+  } else {
+    const mask = buildMask(field, options.centerline);
+    image = maskImage(
+      kind === "skeleton" ? buildSkeleton(mask, options.centerline) : mask,
+    );
   }
 
-  const field = buildField(pixels, options);
-  const mask = buildMask(field, options.centerline);
-  drawMask(
-    background === "skeleton"
-      ? buildSkeleton(mask, options.centerline)
-      : mask,
-  );
+  const layer = document.createElement("canvas");
+  layer.width = image.width;
+  layer.height = image.height;
+  layer.getContext("2d")!.putImageData(image, 0, 0);
+  traced!.layers.set(kind, layer);
+  return layer;
 }
 
-function drawMask(mask: BinaryMask): void {
-  const image = context.createImageData(mask.width, mask.height);
+function maskImage(mask: BinaryMask): ImageData {
+  const image = new ImageData(mask.width, mask.height);
   for (let i = 0; i < mask.data.length; i++) {
     const ink = mask.data[i] === 1;
     const p = i * 4;
@@ -263,12 +361,15 @@ function drawMask(mask: BinaryMask): void {
     image.data[p + 2] = ink ? 20 : 250;
     image.data[p + 3] = 255;
   }
-  context.putImageData(image, 0, 0);
+  return image;
 }
 
-function drawSegments(segments: readonly TracedSegment[]): void {
+function drawSegments(
+  segments: readonly TracedSegment[],
+  scale: number,
+): void {
   const colourEach = checked("showSegments");
-  context.lineWidth = 1.25;
+  context.lineWidth = 1.25 / scale;
   context.lineJoin = "round";
   context.lineCap = "round";
   context.strokeStyle = inkColour();
@@ -288,16 +389,104 @@ function drawSegments(segments: readonly TracedSegment[]): void {
   });
 }
 
-function drawMidpoints(segments: readonly TracedSegment[]): void {
+function drawMidpoints(
+  segments: readonly TracedSegment[],
+  scale: number,
+): void {
+  const size = 2 / scale;
   context.fillStyle = "#c04a2a";
   for (const segment of segments) {
-    context.fillRect(segment.midpoint.x - 1, segment.midpoint.y - 1, 2, 2);
+    context.fillRect(
+      segment.midpoint.x - size / 2,
+      segment.midpoint.y - size / 2,
+      size,
+      size,
+    );
   }
 }
 
 function clamp01(value: number): number {
   return value < 0 ? 0 : value > 1 ? 1 : value;
 }
+
+// -------------------------------------------------------------------------------------
+// View
+// -------------------------------------------------------------------------------------
+
+function fitView(): void {
+  if (!traced) return;
+  const { traceCanvas } = traced;
+  const width = Math.max(1, viewport.clientWidth);
+  const height = Math.max(1, viewport.clientHeight);
+
+  view.scale = Math.min(
+    width / traceCanvas.width,
+    height / traceCanvas.height,
+  );
+  view.offsetX = (traceCanvas.width - width / view.scale) / 2;
+  view.offsetY = (traceCanvas.height - height / view.scale) / 2;
+  paint();
+}
+
+function zoomAt(screenX: number, screenY: number, factor: number): void {
+  const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale * factor));
+  if (next === view.scale) return;
+
+  // Keep whatever is under the pointer under the pointer.
+  const traceX = view.offsetX + screenX / view.scale;
+  const traceY = view.offsetY + screenY / view.scale;
+  view.scale = next;
+  view.offsetX = traceX - screenX / next;
+  view.offsetY = traceY - screenY / next;
+  paint();
+}
+
+canvas.addEventListener(
+  "wheel",
+  (event) => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    zoomAt(
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+      Math.exp(-event.deltaY * 0.0015),
+    );
+  },
+  { passive: false },
+);
+
+let dragging: { x: number; y: number } | null = null;
+
+canvas.addEventListener("pointerdown", (event) => {
+  dragging = { x: event.clientX, y: event.clientY };
+  canvas.setPointerCapture(event.pointerId);
+  canvas.style.cursor = "grabbing";
+});
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!dragging) return;
+  view.offsetX -= (event.clientX - dragging.x) / view.scale;
+  view.offsetY -= (event.clientY - dragging.y) / view.scale;
+  dragging = { x: event.clientX, y: event.clientY };
+  paint();
+});
+
+for (const type of ["pointerup", "pointercancel"] as const) {
+  canvas.addEventListener(type, (event) => {
+    dragging = null;
+    canvas.releasePointerCapture(event.pointerId);
+    canvas.style.cursor = "grab";
+  });
+}
+
+canvas.addEventListener("dblclick", fitView);
+element<HTMLButtonElement>("fit").addEventListener("click", fitView);
+
+new ResizeObserver(() => paint()).observe(viewport);
+
+// -------------------------------------------------------------------------------------
+// Sources
+// -------------------------------------------------------------------------------------
 
 /**
  * A synthetic map, so the page does something before anyone finds a file.
@@ -387,8 +576,12 @@ function useSource(
   description: string,
 ): void {
   source = image;
+  traced = null;
   statusLine.textContent = `${description} — ${image.width}×${image.height}`;
-  render();
+  warningLine.textContent = "";
+  recompute();
+  // A new map is the one time the view should reset; tuning keeps where you were looking.
+  fitView();
 }
 
 function loadUrl(url: string): void {
@@ -405,17 +598,19 @@ function loadUrl(url: string): void {
 }
 
 let pending = 0;
-function scheduleRender(): void {
+function scheduleRecompute(): void {
   // Sliders fire continuously and a full trace is tens to hundreds of milliseconds.
   window.clearTimeout(pending);
-  pending = window.setTimeout(render, 80);
+  pending = window.setTimeout(recompute, 80);
 }
 
 for (const input of document.querySelectorAll("input, select")) {
   const readout = document.getElementById(`${input.id}Value`);
   input.addEventListener("input", () => {
     if (readout) readout.textContent = (input as HTMLInputElement).value;
-    if (input.id !== "url") scheduleRender();
+    if (input.id === "url") return;
+    if (VIEW_CONTROLS.has(input.id)) paint();
+    else scheduleRecompute();
   });
 }
 
@@ -444,4 +639,5 @@ element<HTMLButtonElement>("sample").addEventListener("click", () => {
   useSource(sampleMap(), "synthetic sample map");
 });
 
+canvas.style.cursor = "grab";
 useSource(sampleMap(), "synthetic sample map");
