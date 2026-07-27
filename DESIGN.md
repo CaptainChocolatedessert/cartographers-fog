@@ -317,6 +317,105 @@ isn't: two clients doing read-modify-write against shared metadata can interleav
 overwrites bits the other just added. Single-writer sidesteps the problem entirely and costs
 nothing here.
 
+**Player clients do not accumulate `discovered`.** They compute `currently_visible` locally —
+they must, to render — but take `discovered` from metadata. If every client accumulated
+independently they would diverge, through different sampling instants during a drag and
+different throttle timing, and since only the GM's version persists, each sync would overwrite
+the player's local work. That reads as flicker: cells appearing, then vanishing.
+
+Note this is a consistency decision, not an optimisation. Players still run the visibility
+sweep, which is the expensive part; skipping the rasterization on top saves little.
+
+**Expect the player's region to lag** by accumulation plus debounce plus network. The fog
+updates instantly on the GPU, so the artifact is that ground a player has just left goes
+un-sketched for a beat. If that reads badly, players may accumulate **optimistically** into a
+local copy and union it with the authoritative one — safe precisely because union is
+commutative and idempotent, and every client derives identical polygons from identical walls
+and lights, so the two converge rather than conflict.
+
+Two edge cases this rule does not yet cover:
+
+- **No GM connected.** Nobody accumulates and the region silently stops growing.
+- **More than one GM.** If Owlbear permits several GM-role players, "the GM writes" is
+  ambiguous and reintroduces the read-modify-write race. Needs a deterministic tiebreak — the
+  lowest player id among GMs would do.
+
+### Observing movement — `getItemBounds` is live, `getItems` is not
+
+Accumulating a discovered region means knowing where the lights were *while* a token moved, not
+merely where it ended up. Owlbear makes that harder than it looks, and the way through is one
+asymmetry that is not documented anywhere.
+
+**During a drag, the item store is frozen.** No change event fires on `scene.items.onChange` or
+`scene.local.onChange`, and `getItems` reports the pre-drag position for the entire drag. Measured
+2026-07-26: a ~9s drag of 372 units produced zero events, then one carrying the destination.
+
+**`getItemBounds` is not.** It is the app *computing* geometry rather than reading the item
+record, and it reflects the live interaction transform. Polled at 100ms during the same class of
+drag it moved in steps of 2–33 units while `getItems` read `+0` throughout. Both a light's own
+bounds and its parent token's bounds track live and agree.
+
+Why the two disagree: Dynamic Fog builds each light with `.attachedTo(parent.id)` and sets its
+position exactly once, at creation — its `update()` only ever reapplies radius, falloff and
+angles, and never writes position (`LightActor.ts`, verified in source). The light follows its
+token because the **app renderer** composes the attachment transform, against an interaction that
+is only committed to the item store on release. So the fog visibly moving during a drag is *not*
+evidence that any extension can observe it. Dynamic Fog cannot either; its reconciler subscribes
+to the same two channels we do.
+
+**Remote clients see it too.** A drag performed on one client produced a live bounds trail on
+another, at finer granularity than on the client holding the pointer (which was busy sweeping).
+So the GM can observe a *player's* drag, and single-writer (above) needs no revision to cover
+player movement — the GM watches every light regardless of who owns the token.
+
+#### Consequence: record and flush, never sweep inline
+
+Sampling density and sweep cost must not be coupled. Sweeping inside the poll made the sampling
+interval a function of geometry cost: 46–97ms sweeps behind a re-entry guard produced real samples
+0.2–1.3s apart and steps of 124, 98 and 95 units against a 90-unit polygon — gaps, in exactly the
+case the mechanism exists to prevent. So:
+
+- **Poll cheaply.** One `getItemBounds` per light, no geometry. Record a point once the light has
+  moved `max(cellSize, attenuationRadius / 2)`, so the track is decimated by *distance* and its
+  length is bounded by ground covered rather than by how long a drag took.
+- **Flush after stillness** (250ms), sweeping the whole recorded track at once, with a cap that
+  flushes early on very long drags rather than banking hundreds of samples. Yield to the event
+  loop between sweeps — `await Promise.resolve()` drains only the microtask queue and would leave
+  the poll blocked for the whole flush.
+
+The region therefore lags a drag by about a quarter second and then fills in complete. That trade
+was chosen deliberately: a tight track with no holes beats a live one with gaps.
+
+**Round trips are the binding constraint, not geometry.** Once sweeps were out of the loop, the
+limit became message latency — `getItemBounds` queues behind the main page while it composites a
+fast drag. Two things follow, both learned by measurement:
+
+- Issue every light's reading in **parallel**. Awaiting them one at a time makes a poll cost N
+  round trips, so sampling silently degrades as a scene gains lights.
+- Spend no round trip on anything else. An `await OBR.scene.isReady()` per poll was a third of the
+  traffic; removing it took the worst observed step on a fast drag from **480 units to 105**.
+
+Gaplessness is a property of the distance between consecutive samples — two samples overlap only
+while they are closer together than the polygon is wide. At a 40ms poll and a 45-unit light
+radius, that holds up to roughly 2300 units/sec, which covers ordinary play and leaves a deliberate
+fast flick marginally over. Larger light radii raise the ceiling proportionally.
+
+#### Routes that do not work
+
+- **Interpolating between observations.** Rejected: a token may have gone round a corner, so a
+  straight line marks ground nobody crossed. A wall-gated variant (interpolate only where no wall
+  crosses the line) narrows when the assumption is made without removing it — a token can loop
+  inside one open room. Moot now that the real path is observable.
+- **Our own drag tool.** `OBR.tool.createMode` plus `startItemInteraction` would give the true
+  pointer path, but means reimplementing token dragging and only records when the GM remembers to
+  use it. `getItemBounds` gets the same data for nothing.
+- **Hooking the native drag.** Not possible. `InteractionApi` exposes only
+  `startItemInteraction` — there is no observer for an interaction someone else started — and
+  while `ToolMode`'s click handlers return a `boolean` for pass-through, every drag handler
+  returns `void`.
+- **Accepting the gaps as stylistically appropriate.** Considered and rejected: it is a usability
+  loss, and a limitation should not be promoted to a feature.
+
 ### Storage limits — measured 2026-07-26, and the folklore was wrong
 
 This document previously recorded scene metadata as "reportedly capped at 16KB", and that
@@ -742,6 +841,17 @@ keeping in the back pocket for a quick visual spike.
   cutoff reads best? See §1 — this is tuning, and it is the risk most likely to sink the look.
 - **Sepia palette and stroke weight.** Purely aesthetic, but worth an early visual spike —
   the whole feature lives or dies on whether it looks good.
+- **Cell inclusion criterion — centre, or any overlap?** A cell currently counts as discovered
+  when its **centre** falls inside the visibility polygon. That splits the difference between
+  under- and over-counting, but the alternative — any cell *touching* visible space — is worth
+  trying once there is something to look at, because it errs generously and would show sooner
+  at boundaries.
+
+  Note the mild inconsistency this leaves: `discovered` uses the **full** attenuation radius on
+  the argument that under-reporting leaves conspicuous holes while over-reporting is invisible
+  (see §4), yet centre-sampling then *under*-reports by up to half a cell at every boundary.
+  Any-overlap would make the two consistent. Judge it visually rather than by argument — the
+  difference is half a cell, and whether that shows depends entirely on the renderer.
 - **Rendering mode for `sketch_region`.** Drawn marks, a masked copy of the map, or both as
   user-selectable styles. See "Rendering modes for `sketch_region`" above. Not blocking — step
   3 works regardless — but worth deciding before step 5 wires masking to a specific renderer.
