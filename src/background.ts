@@ -6,14 +6,20 @@
  */
 
 import OBR from "@owlbear-rodeo/sdk";
-import { installDevLog, devLog } from "./devlog";
+import { installDevLog, devLog, setDevLogLabel } from "./devlog";
 import { assertPixelAccess } from "./probe";
 import { installVisibilityOverlay } from "./debug/visibilityOverlay";
-import { probeStorageLimits } from "./debug/storageProbe";
+import { installRegionTracker } from "./region/tracker";
+import { installClearRegionMenu } from "./debug/clearRegionMenu";
 
 installDevLog();
 
 OBR.onReady(async () => {
+  // Label this client before anything else logs — every client in the room shares one
+  // receiver, and unlabelled interleaved output is actively misleading.
+  const role = await OBR.player.getRole();
+  setDevLogLabel(`${role === "GM" ? "GM" : "player"}:${OBR.player.id.slice(0, 4)}`);
+
   devLog("info", "Cartographer's Fog: background ready");
 
   // Subscribe BEFORE the first check, not after. A scene that becomes ready in the window
@@ -34,9 +40,24 @@ OBR.onReady(async () => {
   // compared against the GPU fog. No-ops in production builds.
   installVisibilityOverlay();
 
-  // Development only, one-shot. Measures the real storage limits several design decisions
-  // rest on. Cleans up everything it writes.
-  void probeStorageLimits();
+  // Build order step 3: track the discovered region and draw it. Shares one visibility
+  // computation with the overlay above.
+  void installRegionTracker();
+
+  // The drag probe (`./debug/dragProbe`) is deliberately NOT installed. It answered its question
+  // — `getItemBounds` is live mid-drag, `getItems` is not — and leaving it running costs two
+  // extra bounds round trips per light every 100ms, competing with the region tracker's poll for
+  // exactly the resource that now limits sampling density. Re-install it to re-measure.
+
+  // Development only. Right-click any item -> "Clear explored region" to reset a scene back to
+  // unexplored, which is what makes discovery testable more than once.
+  void installClearRegionMenu();
+
+  // The storage probe (`./debug/storageProbe`) is deliberately NOT called any more. Its three
+  // questions are answered and the numbers are recorded in DESIGN.md, "Storage limits". Leaving
+  // it running costs on every load: it writes megabytes, floods the shared dev log with hundreds
+  // of lines that bury whatever is actually being diagnosed, and consumes the same write rate
+  // limit the region persistence needs. Re-enable it here to re-measure, not by default.
 });
 
 async function runProbe(): Promise<void> {
