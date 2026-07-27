@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trace harness — Cartographer's Fog</title>
+    <!--
+      Dev-only. Deliberately NOT listed in vite.config.ts's rollupOptions.input, so it is
+      served by `npm run dev` and never built or published. Build order step 4 is "run
+      manually on one test map", and whether the result looks like a hand-drawn map is a
+      human judgment — this page is how a human makes it.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --paper: #f4ecd8;
+        --ink: #4a3728;
+        --rule: #cbbb9a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #241d15;
+          --ink: #d9c7a7;
+          --rule: #4a3c2b;
+        }
+      }
+      body {
+        margin: 0;
+        font-family: ui-serif, Georgia, "Times New Roman", serif;
+        background: var(--paper);
+        color: var(--ink);
+        display: grid;
+        grid-template-columns: 21rem 1fr;
+        min-height: 100vh;
+      }
+      aside {
+        padding: 1rem 1.25rem;
+        border-right: 1px solid var(--rule);
+        overflow-y: auto;
+        max-height: 100vh;
+      }
+      h1 {
+        font-size: 1.15rem;
+        font-weight: 500;
+        margin: 0 0 0.25rem;
+      }
+      .sub {
+        font-style: italic;
+        opacity: 0.7;
+        margin: 0 0 1rem;
+        font-size: 0.85rem;
+      }
+      fieldset {
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+        margin: 0 0 0.9rem;
+        padding: 0.5rem 0.75rem 0.75rem;
+      }
+      fieldset[hidden] {
+        display: none;
+      }
+      legend {
+        font-size: 0.75rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.65;
+      }
+      label {
+        display: block;
+        font-size: 0.8rem;
+        margin: 0.55rem 0 0;
+      }
+      label:first-of-type {
+        margin-top: 0;
+      }
+      .value {
+        float: right;
+        font-family: ui-monospace, Consolas, monospace;
+        opacity: 0.75;
+      }
+      input[type="range"] {
+        width: 100%;
+        accent-color: var(--ink);
+      }
+      input[type="text"],
+      input[type="number"],
+      select {
+        width: 100%;
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.3rem;
+        background: transparent;
+        color: inherit;
+        border: 1px solid var(--rule);
+        border-radius: 2px;
+      }
+      button {
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.25rem 0.6rem;
+        background: transparent;
+        color: inherit;
+        border: 1px solid var(--rule);
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      .checks label {
+        display: flex;
+        gap: 0.4rem;
+        align-items: center;
+      }
+      .hint {
+        font-size: 0.72rem;
+        opacity: 0.65;
+        margin: 0.4rem 0 0;
+        line-height: 1.35;
+      }
+      #stats {
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 0.72rem;
+        line-height: 1.5;
+        white-space: pre;
+        opacity: 0.85;
+      }
+      #status {
+        font-size: 0.78rem;
+        min-height: 1.2em;
+        opacity: 0.8;
+      }
+      #warning {
+        font-size: 0.78rem;
+        color: #b4472a;
+        min-height: 1.2em;
+      }
+      main {
+        overflow: auto;
+        padding: 1rem;
+        display: grid;
+        place-items: start center;
+      }
+      canvas {
+        max-width: 100%;
+        border: 1px solid var(--rule);
+        image-rendering: pixelated;
+      }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>Trace harness</h1>
+      <p class="sub">Build order step 4 — dev only, never published.</p>
+
+      <fieldset>
+        <legend>Map</legend>
+        <label
+          >Image file
+          <input type="file" id="file" accept="image/*" />
+        </label>
+        <label
+          >…or asset URL
+          <input
+            type="text"
+            id="url"
+            placeholder="https://images.owlbear.rodeo/…"
+          />
+        </label>
+        <p style="margin: 0.5rem 0 0">
+          <button id="load">Load URL</button>
+          <button id="sample">Use sample map</button>
+        </p>
+        <label
+          >Trace width <span class="value" id="traceWidthValue">1024</span>
+          <input
+            type="range"
+            id="traceWidth"
+            min="256"
+            max="3072"
+            step="128"
+            value="1024"
+          />
+        </label>
+        <label
+          >Source pixels per grid square
+          <input type="number" id="pixelsPerGrid" min="4" step="1" value="70" />
+        </label>
+        <p class="hint">
+          Lengths below are in grid squares, so they survive a change of trace width. Measure
+          one square on the source image.
+        </p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Method</legend>
+        <label
+          >Mode
+          <select id="mode">
+            <option value="centerline">Centerline (spine of the ink)</option>
+            <option value="contour">Contour (silhouette of the ink)</option>
+          </select>
+        </label>
+        <label
+          >Blur σ px <span class="value" id="blurValue">1</span>
+          <input type="range" id="blur" min="0" max="8" step="0.1" value="1" />
+        </label>
+      </fieldset>
+
+      <fieldset id="contourGroup">
+        <legend>Contour</legend>
+        <label
+          >Field
+          <select id="field">
+            <option value="luminance">Luminance</option>
+            <option value="sobel">Sobel gradient</option>
+          </select>
+        </label>
+        <label
+          >Level <span class="value" id="levelValue">0.50</span>
+          <input
+            type="range"
+            id="level"
+            min="0.02"
+            max="0.98"
+            step="0.01"
+            value="0.5"
+          />
+        </label>
+      </fieldset>
+
+      <fieldset id="centerlineGroup">
+        <legend>Centerline</legend>
+        <label
+          >Threshold
+          <select id="threshold">
+            <option value="sauvola">Sauvola (local)</option>
+            <option value="global">Global cutoff</option>
+          </select>
+        </label>
+        <label
+          >Sauvola radius px <span class="value" id="sauvolaRadiusValue">12</span>
+          <input
+            type="range"
+            id="sauvolaRadius"
+            min="2"
+            max="60"
+            step="1"
+            value="12"
+          />
+        </label>
+        <label
+          >Sauvola k <span class="value" id="sauvolaKValue">0.34</span>
+          <input
+            type="range"
+            id="sauvolaK"
+            min="0.05"
+            max="0.8"
+            step="0.01"
+            value="0.34"
+          />
+        </label>
+        <label
+          >Global level <span class="value" id="globalLevelValue">0.50</span>
+          <input
+            type="range"
+            id="globalLevel"
+            min="0.02"
+            max="0.98"
+            step="0.01"
+            value="0.5"
+          />
+        </label>
+        <label
+          >Prune stubs under <span class="value" id="stubValue">0.20</span> sq
+          <input type="range" id="stub" min="0" max="1" step="0.02" value="0.2" />
+        </label>
+        <label
+          >Weld radius px <span class="value" id="weldValue">3</span>
+          <input type="range" id="weld" min="0" max="12" step="0.5" value="3" />
+        </label>
+        <label
+          ><input type="checkbox" id="joinThrough" /> Carry strokes through
+          junctions</label
+        >
+      </fieldset>
+
+      <fieldset>
+        <legend>Geometry</legend>
+        <label
+          >Simplify tolerance px
+          <span class="value" id="simplifyValue">1.5</span>
+          <input
+            type="range"
+            id="simplify"
+            min="0"
+            max="12"
+            step="0.1"
+            value="1.5"
+          />
+        </label>
+        <label
+          >Drop strokes under <span class="value" id="minLengthValue">0.20</span> sq
+          <input
+            type="range"
+            id="minLength"
+            min="0"
+            max="3"
+            step="0.02"
+            value="0.2"
+          />
+        </label>
+        <label
+          >Segment length <span class="value" id="segmentValue">0.35</span> sq
+          <input
+            type="range"
+            id="segment"
+            min="0.05"
+            max="3"
+            step="0.05"
+            value="0.35"
+          />
+        </label>
+      </fieldset>
+
+      <fieldset class="checks">
+        <legend>View</legend>
+        <label
+          >Background
+          <select id="background">
+            <option value="map">Map</option>
+            <option value="field">Scalar field</option>
+            <option value="mask">Ink mask</option>
+            <option value="skeleton">Skeleton</option>
+            <option value="none">Nothing</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="showLines" checked /> Linework</label>
+        <label
+          ><input type="checkbox" id="showSegments" /> Colour each segment</label
+        >
+        <label
+          ><input type="checkbox" id="showMidpoints" /> Segment midpoints</label
+        >
+      </fieldset>
+
+      <p id="status"></p>
+      <p id="warning"></p>
+      <div id="stats"></div>
+    </aside>
+
+    <main><canvas id="canvas" width="800" height="600"></canvas></main>
+
+    <script type="module" src="/src/debug/traceHarness.ts"></script>
+  </body>
+</html>
