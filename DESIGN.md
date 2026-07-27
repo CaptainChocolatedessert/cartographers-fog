@@ -352,6 +352,18 @@ occludes the map in exactly the area we want to draw into, and this extension do
 the fog. So anything shown there must be drawn on a layer *above* it, and **nothing can be made
 to "show through"** — any terrain a player sees in a remembered area has to be redrawn by us.
 
+**Drawing above the fog works, and is not an open risk — settled in step 3.** The region wash
+is a local `Path` on layer `CONTROL`, and it rendered *over* the fog in a real room, on the GM's
+client and a player's. That is the same mechanism the sketch strokes will use — local `Path`
+items, same layer — so mode 1 needs no new capability. The prior art agrees: the **Outliner**
+extension places sketched marks above the fog, which is corroboration that the SDK intends this
+rather than that we found a loophole.
+
+What that does *not* settle: z-ordering against other extensions drawing on `CONTROL` (Outliner
+included), and whether `CONTROL` is the best of the layers above fog rather than merely the
+first one that worked. Both are cheap to revisit if the sketch ends up fighting something else
+for the top of the stack; neither blocks step 5.
+
 That divides the options by what they can actually put on screen, not by implementation taste.
 They are not mutually exclusive; a build could ship more than one as a user-selectable style.
 
@@ -1010,7 +1022,9 @@ keeping in the back pocket for a quick visual spike.
    region wash (rendering mode 3) is what "plain revealed areas" means here — it needs nothing
    beyond what this step already tracks, and showing the tracked region and nothing else is
    exactly what is wanted for verifying it.
-4. Offline edge-trace → `Path` generation, run manually on one test map
+4. ~~Offline edge-trace → `Path` generation, run manually on one test map.~~ **Done
+   2026-07-27** — and it is a *centerline* trace, not an edge trace; see §2. Judged on one real
+   map through `trace.html`. Robustness across more maps is untested and deliberately deferred.
 5. Wire the two together with per-segment masking. Settle the rendering-mode decision here if
    it is not already settled — see "Rendering modes for `sketch_region`".
 6. Wobble, sepia, dash, fade — the pass that makes it look hand-drawn
