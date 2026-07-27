@@ -46,12 +46,19 @@ const server = createServer((req, res) => {
   });
 });
 
-async function record({ level = "info", at = null, args = [] }) {
+async function record({ level = "info", at = null, args = [], client = "?" }) {
   const stamp = at ?? new Date().toISOString();
   const time = stamp.slice(11, 23);
-  const line = `${time} [${String(level).toUpperCase()}] ${args.join(" ")}`;
+  // Every client in the room logs here, so say which one. Without it, a GM and a player
+  // interleaved read as a single client contradicting itself.
+  const who = `[${String(client).padEnd(8)}]`;
+  const line = `${time} [${String(level).toUpperCase()}] ${who} ${args.join(" ")}`;
   process.stdout.write(`${line}\n`);
-  await appendFile(LOG_FILE, `${stamp} [${level}] ${args.join(" ")}\n`, "utf8");
+  await appendFile(
+    LOG_FILE,
+    `${stamp} [${level}] ${who} ${args.join(" ")}\n`,
+    "utf8",
+  );
 }
 
 server.listen(PORT, "127.0.0.1", () => {

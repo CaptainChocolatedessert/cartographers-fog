@@ -11,6 +11,20 @@ const ENDPOINT = "http://localhost:9999/log";
 export type LogLevel = "info" | "warn" | "error" | "reject" | "console";
 
 /**
+ * Identifies which client a line came from.
+ *
+ * Every client in the room posts to the same receiver, so without this the interleaved output
+ * of a GM and a player reads as one client behaving erratically. That is not hypothetical: an
+ * unlabelled log made a player's normal sync lag look like the discovered region shrinking,
+ * which is impossible, and cost a bug hunt.
+ */
+let clientLabel = "?";
+
+export function setDevLogLabel(label: string): void {
+  clientLabel = label;
+}
+
+/**
  * Stringify log arguments without throwing. Anything can end up in a log call —
  * circular SDK items, Errors, DOM events — and the shim losing a message is much worse
  * than the message being ugly, since the message is usually why we are looking.
@@ -53,6 +67,7 @@ export function devLog(level: LogLevel, ...args: unknown[]): void {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       level,
+      client: clientLabel,
       args: serializeArgs(args),
       at: new Date().toISOString(),
     }),
