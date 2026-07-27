@@ -174,6 +174,121 @@ At map import / scene setup:
 
 Runtime persistence then becomes visibility toggling, not geometry generation.
 
+#### Centerline, not contour (decided 2026-07-27)
+
+**The goal is a hand-drawn duplicate of the map, so the trace has to find the stroke the
+cartographer drew, not the outline of it.** Boundary tracing — Sobel or luminance — traces the
+*silhouette* of ink, and a drawn line's silhouette is a loop: two lines wherever there was one.
+That is inherent to contouring, not a tuning failure, and no threshold fixes it.
+
+So the pipeline binarises the ink and thins it to a one-pixel skeleton, then walks the skeleton
+into strokes. Measured on the harness's synthetic parchment map, at the same settings:
+centerline returns 15 strokes / 58 points / 255 segments where contouring returns 8 contours /
+91 points / **493** segments — near enough double the geometry for the same map, which is the
+duplication made visible.
+
+Contour mode stays, for two reasons: it is the right answer for *filled regions*, which have no
+spine worth drawing, and having both behind one switch is what lets a map be judged rather than
+argued about.
+
+**Region-based vectorization** — quantise colours, then trace the boundaries between regions —
+is the third option, deferred. It suits painted maps with no linework to find, where
+skeletonisation has nothing to work with. Revisit if centerline disappoints on a map that is
+more painting than drawing.
+
+**Neural line extraction** (sketch simplification, ControlNet-style lineart models) is worth
+trying as a *pre-processor* that strips paper texture before binarisation, but **not inside the
+extension**: tens of MB of weights against an iframe whose storage is partitioned, or a
+third-party service in the path of a feature that has to work at the table, and someone's
+licensed map art leaving the machine. Run it offline, once per map, and feed the cleaned raster
+to the harness.
+
+#### Prior art: the author's own `VTT_Maps`
+
+Skeleton post-processing is adapted from `VTT_Maps` (private, MIT, so GPLv3-compatible), which
+solved it against exactly these maps. Four rules come from there, each because the obvious
+version is wrong:
+
+- Prune a dead-end branch **only when it terminates at a junction** — a short chain ending in
+  free space is a real short stroke.
+- **Pruning must iterate**; removing one stub can expose the next.
+- **Weld junction clusters.** Thinning leaves junction pixels one or two apart, and the chains
+  between them survive every other cleanup: stub pruning refuses them because both ends are
+  junctions, collinear merging refuses them because they are not degree-2.
+- **Hough transforms are a dead end**, with the measurement attached: hand-drawn strokes wander
+  ±5–15px, each locally straight run votes for a different bin, and the output is dozens of
+  disjoint fragments.
+
+Also from there, and adopted: **express tuning constants in grid squares, not pixels**, so they
+survive a change of map resolution. The harness does that conversion; the pipeline stays in
+pixel space.
+
+What that project did *not* solve is the half that matters here: its `cvDetect` is stubbed, and
+its walls come from a hand-painted PSD layer thresholded on alpha. Getting ink out of a textured
+map was never faced there, which is why the binarisation stage is this project's own work.
+
+Two divergences: it emits **segment pairs** because `.uvtt` walls are pairs, where this emits
+**polylines**, because a stroke drawn as one line has to wobble as one line in step 6. And
+`mergeCollinearSegments` becomes a topological join — where exactly two chain ends meet, they
+are one stroke — rather than a geometric one.
+
+#### As built (2026-07-27) — `src/trace/*`
+
+Steps 1–3 are implemented and unit-tested; step 4 (wobble) is deliberately left to build
+order step 6, so this stage's output can be compared against the map without the noise that
+will later be the point. Step 5 (emitting `Path` items) is step 5 of the build order, which
+also places the geometry in the scene.
+
+The pipeline is `pixels → luminance → blur → contours at a level → simplify → drop specks →
+chop`, all in **image pixel space** and all free of the SDK and the DOM, so it is testable
+headlessly like `geometry/` and `visibility/`. `debug/traceHarness.ts` + `trace.html` drive it
+over a real image with live controls; that page is not a build input and is never published.
+
+Seven things worth not re-deriving:
+
+- **A global threshold cannot separate ink from parchment.** The line is darker than its
+  surroundings *locally*, but across a map the paper's own range overlaps the ink's — so the
+  line's palest pixel is lighter than the paper's darkest, and no single cutoff catches all of
+  one without flooding the other. Sauvola's local threshold, `T = mean·(1 + k·(σ/R − 1))`, is
+  the standard answer from document binarisation, and the deviation term is what makes an
+  evenly textured patch produce no ink at all. Computed over summed-area tables so the window
+  radius is free.
+- **`inkFraction` is reported for the same reason `fieldMax` is.** A threshold that reads the
+  paper as ink does not fail visibly — it returns a thicket of short chains, which looks like a
+  busy map rather than an error.
+- **Thinning erodes stroke ends by about half the stroke's width**, and a diagonal band two
+  pixels across is consumed entirely (a one-pixel diagonal survives, because its ends have a
+  single neighbour and are protected). Consequence for tuning: do not trace at a resolution
+  where linework is hairline. The harness warns below ~24px per grid square.
+
+- **Two fields, not one.** `sobelMagnitude` is the specified Sobel. `luminanceField` is also
+  directly contourable and is better on the common map (dark linework on a lighter floor):
+  the contour lands exactly on the visible edge of a stroke, where Sobel contours the gradient
+  *ridge* and so returns a line down each flank of every painted stroke. Sobel earns its place
+  by being polarity-agnostic — it finds pale walls on a dark floor, which luminance at a fixed
+  level does not. Which one looks right is a human judgment; the pipeline takes it as an
+  option.
+- **The useful level depends on the field, and is not guessable.** Luminance spans 0..1, but a
+  blurred Sobel magnitude on a real map peaks around **0.3** — so the natural-looking level of
+  0.5 returns *nothing at all*, which is indistinguishable from a broken pipeline. `TraceStats`
+  therefore reports `fieldMax` and `fieldMean`. This was found by the harness returning zero
+  contours and no way to tell why; it is the same lesson as the storage probe, that a
+  diagnostic which cannot separate its failure modes invents findings.
+- **No invert control.** Contouring a field and contouring its inverse produce the *same*
+  curves — inversion only maps level `L` to `1 - L` — so a polarity switch would duplicate the
+  level, and at 0.5 would do nothing whatsoever.
+- **Marching squares keys crossings by grid edge, not by coordinate.** The textbook version
+  emits loose points per cell and joins them by float equality, which fails intermittently and
+  shatters one contour into fragments that read as a tracing artifact rather than a bug. An
+  integer edge key makes stitching exact. Ambiguous saddles are resolved by the corner average,
+  which keeps a diagonal doorway connected instead of pinching it shut.
+
+**Cost, measured in the harness at 1024×768** (synthetic parchment map): centerline 206ms —
+field 82ms, binarise + thin 103ms, skeleton walk 19ms, the rest negligible — for 255 segments
+and 538 path commands, inside one item. Contour mode is 72ms for the same map but twice the
+geometry. Thinning is the expensive stage and it is iterative, so cost grows with ink, not just
+with pixels. This runs once per map, not per frame.
+
 ### 3. Pre-segment the contours
 
 Chop traced contours into short segments — a few grid units each — at generation time.
@@ -183,6 +298,14 @@ visibility polygons) rather than a per-frame polygon boolean operation.
 
 Segment length is the primary tuning knob: shorter segments give a crisper mask boundary at
 the cost of item count.
+
+**As built:** a segment is a short *polyline*, not a straight two-point piece, and cuts fall
+wherever the arc-length budget runs out rather than at vertices. Cutting only at vertices
+would leave a simplified wall as one enormous segment; forcing pieces straight would discard
+the vertices simplification just judged worth keeping. Each segment carries its midpoint,
+precomputed, because that is what the runtime mask tests. `trace/strokeChunks.ts` batches
+segments to the 8192-command item cap by *command* count, since a segment's cost varies with
+how much simplification kept — unlike a region run's fixed five.
 
 ### 4. Region math
 
