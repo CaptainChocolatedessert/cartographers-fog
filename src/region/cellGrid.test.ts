@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_CELLS,
+  MIN_CELLS_PER_AXIS,
   SUBDIVISIONS,
   cellBounds,
   cellCentre,
@@ -23,12 +24,43 @@ const bounds: Bounds = { min: { x: 0, y: 0 }, max: { x: 1000, y: 500 } };
 const DPI = 50 * SUBDIVISIONS;
 
 describe("createCellGrid", () => {
-  it("subdivides the scene grid", () => {
-    const grid = createCellGrid(bounds, DPI);
+  it("subdivides the scene grid when that already clears the floor", () => {
+    // Large enough that dpi / SUBDIVISIONS gives well over MIN_CELLS_PER_AXIS on both axes.
+    const large: Bounds = { min: { x: 0, y: 0 }, max: { x: 20_000, y: 10_000 } };
+    const grid = createCellGrid(large, DPI);
 
     expect(grid.cellSize).toBe(DPI / SUBDIVISIONS);
-    expect(grid.columns).toBe(1000 / (DPI / SUBDIVISIONS));
-    expect(grid.rows).toBe(500 / (DPI / SUBDIVISIONS));
+    expect(grid.columns).toBeGreaterThanOrEqual(MIN_CELLS_PER_AXIS);
+    expect(grid.rows).toBeGreaterThanOrEqual(MIN_CELLS_PER_AXIS);
+  });
+
+  it("refines past the subdivision when a map spans few grid squares", () => {
+    // The test scene: 816x1056 world units at dpi 150 is 5.4 grid squares across. The plain
+    // subdivision gives 37.5-unit cells and a 22x29 grid, coarser than the segments it masks.
+    const small: Bounds = { min: { x: 0, y: 0 }, max: { x: 816, y: 1056 } };
+    const grid = createCellGrid(small, 150);
+
+    expect(grid.cellSize).toBeLessThan(150 / SUBDIVISIONS);
+    expect(grid.columns).toBeGreaterThanOrEqual(MIN_CELLS_PER_AXIS);
+    expect(grid.rows).toBeGreaterThanOrEqual(MIN_CELLS_PER_AXIS);
+    expect(cellCount(grid)).toBeLessThanOrEqual(MAX_CELLS);
+  });
+
+  it("will not refine below one map pixel", () => {
+    // An 816-unit map from an 816-pixel image: one unit per pixel. The floor wants 4.08-unit
+    // cells, which is fine — but asking for cells finer than a pixel records detail the source
+    // does not have.
+    const small: Bounds = { min: { x: 0, y: 0 }, max: { x: 816, y: 1056 } };
+    const grid = createCellGrid(small, 150, { minCellSize: 20 });
+
+    expect(grid.cellSize).toBe(20);
+  });
+
+  it("does not let a coarse pixel floor enlarge cells beyond the subdivision", () => {
+    // `minCellSize` is a floor on refinement, not a target. A very low-resolution image must
+    // not make cells coarser than the scene grid would have produced on its own.
+    const grid = createCellGrid(bounds, DPI, { minCellSize: 10_000 });
+    expect(grid.cellSize).toBe(DPI / SUBDIVISIONS);
   });
 
   it("anchors the origin at the bounds minimum", () => {
@@ -43,6 +75,7 @@ describe("createCellGrid", () => {
     const grid = createCellGrid(
       { min: { x: 0, y: 0 }, max: { x: 101, y: 1 } },
       DPI,
+      { minCellSize: 50 },
     );
     expect(grid.columns).toBe(3); // 101 / 50 = 2.02 -> 3
     expect(grid.rows).toBe(1);
@@ -76,7 +109,9 @@ describe("createCellGrid", () => {
 });
 
 describe("coordinate mapping", () => {
-  const grid = createCellGrid(bounds, DPI); // cellSize 50
+  // `minCellSize` pins the cell at 50 units so these expectations test the mapping rather than
+  // the refinement rule.
+  const grid = createCellGrid(bounds, DPI, { minCellSize: 50 });
 
   it("maps world positions to cells", () => {
     expect(columnAt(grid, 0)).toBe(0);
@@ -116,14 +151,20 @@ describe("coordinate mapping", () => {
 
 describe("sameGrid", () => {
   it("accepts identical grids and rejects any difference", () => {
-    const grid = createCellGrid(bounds, DPI);
+    const grid = createCellGrid(bounds, DPI, { minCellSize: 50 });
 
-    expect(sameGrid(grid, createCellGrid(bounds, DPI))).toBe(true);
-    expect(sameGrid(grid, createCellGrid(bounds, DPI * 2))).toBe(false);
+    expect(
+      sameGrid(grid, createCellGrid(bounds, DPI, { minCellSize: 50 })),
+    ).toBe(true);
+    expect(
+      sameGrid(grid, createCellGrid(bounds, DPI * 2, { minCellSize: 100 })),
+    ).toBe(false);
     expect(
       sameGrid(
         grid,
-        createCellGrid({ min: { x: 1, y: 0 }, max: { x: 1001, y: 500 } }, DPI),
+        createCellGrid({ min: { x: 1, y: 0 }, max: { x: 1001, y: 500 } }, DPI, {
+          minCellSize: 50,
+        }),
       ),
     ).toBe(false);
   });

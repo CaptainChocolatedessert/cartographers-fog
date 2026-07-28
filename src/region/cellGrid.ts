@@ -29,10 +29,44 @@ import type { Vector2 } from "../geometry/vector";
 export const SUBDIVISIONS = 4;
 
 /**
- * Upper bound on total cells, so a very large map coarsens instead of blowing the metadata
- * budget. 65536 cells is 8KB raw and far less once run-length encoded.
+ * Fewest cells along either axis, whatever the scene's grid says.
+ *
+ * `SUBDIVISIONS` alone ties cell size to the *grid*, which breaks down on a map that spans few
+ * grid squares. Measured on the test scene: 816x1056 world units at dpi 150 is 5.4 squares
+ * across, giving 37.5-unit cells — a 22x29 grid for the whole map. Two things were then wrong
+ * at once. The cells were larger than the traced segments they gate (37.5 against ~24.5 units),
+ * inverting DESIGN.md §3's assumption that the mask is finer than the geometry it masks; and
+ * they were comparable to a light's own diameter (90 units), so a token's whole field of view
+ * quantised to a handful of cells and exploration was recorded as blocks rather than a path.
+ *
+ * 200 per axis puts the test scene at ~4 units per cell: six times finer than a segment, and
+ * over twenty times finer than a light. Bounded below by the map's own pixel size — see
+ * `CellGridOptions.minCellSize` — since a cell smaller than a pixel records detail the image
+ * does not have.
  */
-export const MAX_CELLS = 256 * 256;
+export const MIN_CELLS_PER_AXIS = 200;
+
+/**
+ * Upper bound on total cells.
+ *
+ * Raised from 256x256 when `MIN_CELLS_PER_AXIS` arrived, which the old ceiling would have
+ * fought on any map more elongated than about 1.6:1. Storage is not the constraint it was
+ * assumed to be: no metadata limit was found below 512KB per key, against realistic encoded
+ * regions of 0.5-4KB, and encoding scales with the region's perimeter rather than its cell
+ * count (DESIGN.md, "Storage limits"). Masking scales with visible area, not grid size, and
+ * measured ~11ms at 1024x1024. The wash renderer already chunks against the item command limit.
+ */
+export const MAX_CELLS = 512 * 512;
+
+export interface CellGridOptions {
+  /**
+   * Never make a cell smaller than this — one pixel of the map image, in world units.
+   *
+   * Below a pixel the region records distinctions the source cannot support, at a cost in
+   * memory and encoded size that buys nothing.
+   */
+  readonly minCellSize?: number;
+}
 
 export interface Bounds {
   min: Vector2;
@@ -51,16 +85,40 @@ export interface CellGrid {
 /**
  * Build a cell grid covering `bounds`.
  *
- * `dpi` is the scene grid's world units per square (`OBR.scene.grid.getDpi()`). The requested
- * cell size is `dpi / SUBDIVISIONS`, coarsened by whole steps until the grid fits `MAX_CELLS`
- * — coarsening rather than clipping, so a big map loses precision instead of losing area.
+ * `dpi` is the scene grid's world units per square (`OBR.scene.grid.getDpi()`). Cell size starts
+ * at `dpi / SUBDIVISIONS`, is then refined until both axes hold at least `MIN_CELLS_PER_AXIS`
+ * cells — never below `minCellSize` — and finally coarsened by whole steps until the grid fits
+ * `MAX_CELLS`. Coarsening rather than clipping, so a big map loses precision instead of area.
+ *
+ * The refinement is what makes the grid usable on a map spanning few grid squares; the
+ * subdivision alone is far too coarse there. On a large map the subdivision is already finer
+ * than the floor and nothing changes.
  */
-export function createCellGrid(bounds: Bounds, dpi: number): CellGrid {
+export function createCellGrid(
+  bounds: Bounds,
+  dpi: number,
+  options: CellGridOptions = {},
+): CellGrid {
   const width = Math.max(0, bounds.max.x - bounds.min.x);
   const height = Math.max(0, bounds.max.y - bounds.min.y);
 
   let cellSize = dpi / SUBDIVISIONS;
   if (!(cellSize > 0)) cellSize = dpi > 0 ? dpi : 1;
+
+  // Refine to the per-axis floor. Driven by the *shorter* axis's requirement, since cells are
+  // square and both axes must clear the floor.
+  const minCellSize =
+    options.minCellSize && options.minCellSize > 0 ? options.minCellSize : 0;
+  const byFloor = Math.min(
+    width > 0 ? width / MIN_CELLS_PER_AXIS : Infinity,
+    height > 0 ? height / MIN_CELLS_PER_AXIS : Infinity,
+  );
+  if (Number.isFinite(byFloor)) {
+    // Only ever refines. Without this guard a `minCellSize` coarser than the subdivision would
+    // make cells *larger* than asked for, which is not what a floor on cell size means.
+    const refined = Math.max(byFloor, minCellSize);
+    if (refined < cellSize) cellSize = refined;
+  }
 
   let columns = Math.max(1, Math.ceil(width / cellSize));
   let rows = Math.max(1, Math.ceil(height / cellSize));

@@ -21,8 +21,12 @@ const BOUNDS: Bounds = { min: { x: 0, y: 0 }, max: { x: 1000, y: 600 } };
 /** Keeps cells exactly 50 world units — a 20x12 grid — whatever SUBDIVISIONS is set to. */
 const DPI = 50 * SUBDIVISIONS;
 
+/**
+ * `minCellSize` pins the cell at 50 units against `MIN_CELLS_PER_AXIS`, which would otherwise
+ * refine this fixture to a 200-cell axis. These suites test mask arithmetic, not grid sizing.
+ */
 function grid() {
-  return createCellGrid(BOUNDS, DPI);
+  return createCellGrid(BOUNDS, DPI, { minCellSize: 50 });
 }
 
 /** Axis-aligned rectangle as a polygon. */

@@ -359,13 +359,146 @@ items, same layer — so mode 1 needs no new capability. The prior art agrees: t
 extension places sketched marks above the fog, which is corroboration that the SDK intends this
 rather than that we found a loophole.
 
-What that does *not* settle: z-ordering against other extensions drawing on `CONTROL` (Outliner
-included), and whether `CONTROL` is the best of the layers above fog rather than merely the
-first one that worked. Both are cheap to revisit if the sketch ends up fighting something else
-for the top of the stack; neither blocks step 5.
+**There is more than one layer above the fog.** `Layer` is declared in the SDK as:
+
+```
+MAP | GRID | DRAWING | PROP | MOUNT | CHARACTER | ATTACHMENT | NOTE | TEXT | RULER
+| FOG | POINTER | POST_PROCESS | CONTROL | POPOVER
+```
+
+Four sit after `FOG`, and **Outliner offers `POINTER`, not `CONTROL`** (user, 2026-07-27) —
+which is a choice about which layer suits sketched marks, not evidence about what is above the
+fog. `CONTROL` demonstrably is; we render there already.
+
+Treat the declaration order as a *hint* at render order, not a contract: the type is a string
+union and nothing documents its ordering. It is consistent with the one thing we measured —
+`CONTROL` draws over `FOG` — and if it holds generally then `CONTROL` also draws over `POINTER`,
+so our strokes would sit above Outliner's rather than below them.
+
+So the open question is narrower than "does this work", and worth one room test when step 5 has
+something to look at:
+
+- **Semantics.** `CONTROL` reads as the layer for tool chrome, so persistent scene content there
+  may be competing with other extensions' UI for the top of the stack. `POINTER` is what a
+  peer extension chose for exactly this job.
+- **Z-order in practice**, against Outliner and Dynamic Fog both installed.
+
+Neither blocks step 5, and the layer is a one-line change (`wash.ts`'s `WASH_LAYER`) if the
+test says move.
 
 That divides the options by what they can actually put on screen, not by implementation taste.
 They are not mutually exclusive; a build could ship more than one as a user-selectable style.
+
+### Placing the sketch — as built (2026-07-28), `src/sketch/*`
+
+Build order step 5: trace the scene's map, mask the result against the discovered region, draw
+what remains. Rendering mode 1 (drawn marks), in flat red — the hand-drawn treatment is step 6,
+and a debug colour is deliberate, since a stroke that could be mistaken for map art is a stroke
+whose misplacement nobody notices.
+
+Verified in a room 2026-07-28: 347 strokes, 577 segments, traced in 335ms, drawn over the fog
+and masked by the region.
+
+#### Which map gets traced, and why it is a choice
+
+A scene can hold several MAP-layer images, and one may be a GM's overlay — secret doors, the
+real layout behind an illusion. Every client traces locally and draws its own strokes (§5), so
+a player client tracing that overlay puts GM-only linework on a player's screen. That is a
+spoiled session, not a cosmetic bug.
+
+**Nothing in the SDK lets this be detected.** `Item` carries a plain `visible: boolean` and no
+role dimension, so no field marks an image as GM-only, and whether a player client's `getItems`
+even returns one is untested. So the GM nominates the map — right-click, "Sketch from this map"
+— and the nomination lives in **scene metadata**, so every client traces the same one.
+
+Two refinements came out of the first room test, and the order matters:
+
+- **The layer alone does not mean "map".** The test scene held the map plus a character token
+  called "Monk" that had ended up on the MAP layer, and refusing to trace until that was
+  disambiguated is the safety rule firing on a case it was never meant to catch. Candidates are
+  now ranked by world-space area, and anything under a quarter of the largest is discarded.
+  This is **not** the rejected largest-wins heuristic: it only ever *removes* images, so it
+  cannot cause a GM-only image to be traced that would not have been anyway, and two comparable
+  images still produce a refusal.
+- **A locked map cannot be selected, so it has no context menu.** Scene maps are usually locked,
+  which made the nomination unreachable exactly when it was needed. The refusal message now says
+  so. A proper picker belongs with the settings UI whenever that exists.
+
+Where no choice has been made and one candidate survives, it is traced. Otherwise nothing is
+traced and the candidates are logged with their sizes and lock state. **Never guess.**
+
+#### Trace resolution — a cap, not a target
+
+The raster is `min(sourceWidth, 1024)`, which is the trace harness's default and therefore the
+configuration that was judged by eye. Two findings sit behind that, both worth not re-deriving.
+
+**Density targeting was tried and rejected.** The harness's seven tuning constants split two
+ways: three scale with pixels per grid square, four are raw pixels and so mean nothing except
+against the raster they were tuned on. That argues for choosing the width to hold *density*
+constant, making all seven portable at once. It is sound in principle and wrong in practice —
+the test scene's map spans **5.4 grid squares** (816 world units at dpi 150), so a 32 px/square
+target picks a **174-pixel** raster and thinning erases every line. The harness's own
+24 px/square warning was calibrated on maps where a grid square is a small slice of the image;
+on a map a few squares across, the same rule discards nearly all the resolution. Width is a
+property of the image, never of how many squares it happens to span.
+
+**The harness's grid-square settings were never calibrated.** Its three grid-denominated lengths
+convert through a "source pixels per grid square" field that was left at its **default of 70**,
+never measured. So the validated configuration is pixel constants against a 1024-capped raster,
+with no relation to the scene's grid at all — `VTT_Maps`' portability rule was nominally applied
+but is not actually in force. The extension reproduces that arithmetic verbatim, placeholder and
+all, because deriving lengths from a map's *true* density is a different configuration rather
+than a more faithful one: on the test scene it would have tripled every length (150 px/square
+against the nominal 70). Both figures are logged, so the gap is visible rather than assumed.
+
+Recalibrating properly means measuring a real map and re-judging in the harness. That is
+outstanding work, not a tidy-up.
+
+#### Masking
+
+`discovered` is a cell lookup, O(1), already quantised because that is how it is stored.
+`currently_visible` is tested against the polygons **at full precision**, not against a
+pre-subtracted mask: quantising it would stair-step the inner boundary to the cell size, and
+that is the boundary that moves with the party and gets looked at directly. The region wash can
+afford cells because it is a region marker; linework cannot. The two therefore disagree by up to
+half a cell at the boundary, by design.
+
+Polygon bounding boxes are hoisted out of the loop, for the reason "Masking cost" records below.
+
+#### Cell resolution — grid-derived sizing fails on a small map
+
+`SUBDIVISIONS` alone ties cell size to the scene grid, which breaks down on a map spanning few
+grid squares. Measured on the test scene: 37.5-unit cells, a 22x29 grid for the whole map, and
+two things wrong at once — cells **larger than the traced segments they gate** (37.5 against
+~24.5 units), inverting §3's assumption that the mask is finer than the geometry it masks; and
+cells comparable to a light's own diameter (90 units), so a token's whole field of view
+quantised to a couple of cells and exploration recorded as blocks rather than a path.
+
+`MIN_CELLS_PER_AXIS = 200` fixes it, bounded below by one map pixel — a cell finer than a pixel
+records detail the source does not have. The test scene goes to 200x259 cells of 4.08 units:
+six times finer than a segment, twenty times finer than a light, four times coarser than a
+pixel. `MAX_CELLS` rose from 256² to 512² to stop the floor fighting the ceiling on anything
+more elongated than about 1.6:1; storage was measured to have two orders of magnitude of
+headroom, so it was never the binding constraint.
+
+Changing cell size invalidates stored regions — `sameGrid` rejects them and the scene starts
+unexplored, logged rather than silent.
+
+#### Known tuning limits, judged on a real map (2026-07-28)
+
+Recorded because they are properties of the settings at a given resolution, not defects:
+
+- **Bold text collapses to a single stroke running along the words.** Blur plus Sauvola merges
+  adjacent letters into one blob and thinning returns its spine. This is skeletonisation working
+  as designed — see "Centerline, not contour" on filled regions having no spine worth drawing.
+- **Small text and fine pen strokes disappear.** `minContourLength` is 14px here, substantial on
+  an 816px-wide map, and thinning erodes anything 1–2px across entirely. At 150 px per grid
+  square — ordinary battlemap resolution — body text is ~10px tall with hairline strokes, below
+  both thresholds.
+
+Levers when this is revisited, in likely order of payoff: `minContourLength`, `blurSigma`,
+`sauvolaRadius`. Tune in the harness, which takes an asset URL directly; the extension logs the
+map's URL for exactly that.
 
 **1. Drawn marks — vector strokes** (the mode described in §2/§3/§6/§7). Traced outlines,
 perturbed for a hand-drawn wobble, reading as ink on darkness. Shows remembered *structure*,
@@ -924,6 +1057,9 @@ Recorded so they don't get re-litigated:
 | Sync item updates on token move | Hammers the network; use metadata + local items |
 | `time`-driven squiggle | Visually nauseating |
 | POST_PROCESS self-masking shader | See below |
+| Trace resolution chosen from grid density | Picks a 174px raster on a map 5.4 squares across; see "Trace resolution" |
+| Largest MAP image wins | A GM overlay is the same size as the map it covers; see "Which map gets traced" |
+| Interpolating between movement observations | See "Routes that do not work" |
 
 **On walls as geometry:** walls are already vector data, so deriving the sketch from them would
 need no pixel access, no edge detection, and no contour tracing — and wall outlines plus
@@ -987,6 +1123,13 @@ keeping in the back pocket for a quick visual spike.
   (see §4), yet centre-sampling then *under*-reports by up to half a cell at every boundary.
   Any-overlap would make the two consistent. Judge it visually rather than by argument — the
   difference is half a cell, and whether that shows depends entirely on the renderer.
+- **Trace calibration across maps.** The shipped settings are the harness defaults, judged on
+  one map and confirmed workable on a second (see "Trace resolution" for why they are pixel
+  constants rather than the grid-relative ones they appear to be). Two things are outstanding
+  and neither is urgent: measuring a real map's pixels-per-grid-square so the lengths can be
+  made genuinely portable, and the tuning limits under "Known tuning limits" — text and fine
+  pen strokes. Robustness across more maps stays deliberately deferred; a poor result on a new
+  map is expected work, not a regression.
 - **Rendering mode for `sketch_region`.** Drawn marks, a masked copy of the map, or both as
   user-selectable styles. See "Rendering modes for `sketch_region`" above. Not blocking — step
   3 works regardless — but worth deciding before step 5 wires masking to a specific renderer.
@@ -1025,6 +1168,8 @@ keeping in the back pocket for a quick visual spike.
 4. ~~Offline edge-trace → `Path` generation, run manually on one test map.~~ **Done
    2026-07-27** — and it is a *centerline* trace, not an edge trace; see §2. Judged on one real
    map through `trace.html`. Robustness across more maps is untested and deliberately deferred.
-5. Wire the two together with per-segment masking. Settle the rendering-mode decision here if
-   it is not already settled — see "Rendering modes for `sketch_region`".
+5. ~~Wire the two together with per-segment masking.~~ **Done 2026-07-28** — see "Placing the
+   sketch". Rendering mode 1 (drawn marks), in debug red, verified in a room. The rendering-mode
+   decision is settled *for this build* rather than closed: modes 2 and 3 remain available and
+   nothing about step 5 forecloses them.
 6. Wobble, sepia, dash, fade — the pass that makes it look hand-drawn

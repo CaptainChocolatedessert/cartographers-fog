@@ -37,6 +37,13 @@ import {
   type RegionMask,
 } from "./regionMask";
 import { clearWash, renderWash } from "./wash";
+import { onMapChoiceChange, readMapChoice } from "../sketch/mapChoice";
+import {
+  prepareSketch,
+  renderSketch,
+  resetSketch,
+  sketchSegmentCount,
+} from "../sketch/sketch";
 import { boundingBox } from "../geometry/polygon";
 import {
   latestSnapshot,
@@ -117,7 +124,19 @@ let persistTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unsubscribeVisibility: (() => void) | undefined;
 let unsubscribeRegion: (() => void) | undefined;
+let unsubscribeMapChoice: (() => void) | undefined;
 let rendering = false;
+
+/** A redraw was requested while one was in flight, and must run once this one finishes. */
+let renderAgain = false;
+
+/**
+ * Which map the sketch is currently traced from, so a metadata change that leaves it alone does
+ * not trigger a re-trace. `onMapChoiceChange` rides `scene.onMetadataChange`, which also fires
+ * for every region write this client makes — several a minute during play, against a trace
+ * costing a few hundred milliseconds.
+ */
+let sketchMapId: string | undefined;
 
 /**
  * Guards the bounds reads against re-entry, so a slow round trip cannot queue ticks behind each
@@ -212,6 +231,20 @@ async function initialiseForScene(): Promise<void> {
 
   unsubscribeVisibility = subscribeVisibility(handleSnapshot);
 
+  // Re-trace when the GM nominates a different map, on every client. Gated on the id actually
+  // changing: this subscription shares `scene.onMetadataChange` with the region writes, which
+  // land several times a minute during play.
+  sketchMapId = await readMapChoice();
+  unsubscribeMapChoice = onMapChoiceChange((itemId) => {
+    if (itemId === sketchMapId) return;
+    sketchMapId = itemId;
+    void buildSketch();
+  });
+
+  // Not awaited. Tracing is a few hundred milliseconds of synchronous work and the wash should
+  // appear immediately; the strokes join it when the trace lands.
+  void buildSketch();
+
   // Players read the region rather than accumulating it, so only the GM pays for polling.
   if (isGm) {
     pollTimer = setInterval(() => {
@@ -220,11 +253,22 @@ async function initialiseForScene(): Promise<void> {
   }
 }
 
+/** Trace the scene's map, then draw whatever of it is already remembered. */
+async function buildSketch(): Promise<void> {
+  if (await prepareSketch()) await render();
+}
+
 async function teardownScene(): Promise<void> {
   unsubscribeVisibility?.();
   unsubscribeVisibility = undefined;
   unsubscribeRegion?.();
   unsubscribeRegion = undefined;
+  unsubscribeMapChoice?.();
+  unsubscribeMapChoice = undefined;
+  sketchMapId = undefined;
+  // A queued redraw belongs to the scene being torn down; letting it fire would repaint from
+  // state the next scene is about to replace.
+  renderAgain = false;
 
   if (persistTimer !== undefined) clearTimeout(persistTimer);
   persistTimer = undefined;
@@ -243,6 +287,8 @@ async function teardownScene(): Promise<void> {
   visiblePolygons = [];
 
   await clearWash().catch(() => {});
+  // A new scene is a new map: the cached trace addresses ground this scene does not have.
+  await resetSketch();
 }
 
 /**
@@ -458,20 +504,50 @@ async function livePosition(lightId: string): Promise<Vector2 | undefined> {
   }
 }
 
+/**
+ * Redraw the wash and the sketch.
+ *
+ * Overlapping calls coalesce rather than being dropped. Dropping is nearly harmless for the
+ * wash — something moves a moment later and the next render corrects it — but the sketch is
+ * drawn once when the trace finishes, and a trace landing while a render happened to be in
+ * flight would leave a scene with no strokes until a token moved. That reads exactly like the
+ * feature not working.
+ */
 async function render(): Promise<void> {
-  if (!discovered || rendering) return;
+  if (!discovered) return;
+  if (rendering) {
+    renderAgain = true;
+    return;
+  }
   rendering = true;
 
   try {
     const runs = await renderWash(discovered, visiblePolygons);
+
+    // Both read the same `discovered` and the same visible polygons, but the sketch tests those
+    // polygons directly rather than the wash's cell mask — see `sketch/mask.ts` on why the
+    // moving edge is worth full precision. So the two can disagree by up to half a cell at the
+    // boundary, by design.
+    const drawn = await renderSketch(discovered, visiblePolygons);
+
     devLog(
       "info",
-      `region: ${countSet(discovered)} cells discovered, wash drawn as ${runs} runs`,
+      `region: ${countSet(discovered)} cells discovered, wash drawn as ${runs} runs` +
+        (drawn === null
+          ? ", no sketch traced"
+          : `, sketch ${drawn}/${sketchSegmentCount()} segments`),
     );
   } catch (error) {
     devLog("error", "region: wash render failed", error);
   } finally {
     rendering = false;
+  }
+
+  // Outside the guard, so a request that arrived mid-render is served against the current state
+  // rather than the state this pass drew.
+  if (renderAgain) {
+    renderAgain = false;
+    await render();
   }
 }
 

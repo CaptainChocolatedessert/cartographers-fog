@@ -11,6 +11,7 @@ import { assertPixelAccess } from "./probe";
 import { installVisibilityOverlay } from "./debug/visibilityOverlay";
 import { installRegionTracker } from "./region/tracker";
 import { installClearRegionMenu } from "./debug/clearRegionMenu";
+import { installChooseMapMenu } from "./sketch/chooseMapMenu";
 
 installDevLog();
 
@@ -41,8 +42,14 @@ OBR.onReady(async () => {
   installVisibilityOverlay();
 
   // Build order step 3: track the discovered region and draw it. Shares one visibility
-  // computation with the overlay above.
+  // computation with the overlay above. Step 5's traced sketch rides the same lifecycle — the
+  // tracker owns `discovered` and the visible polygons, which are exactly what masking needs.
   void installRegionTracker();
+
+  // Ships, unlike the dev menu below: a scene with more than one MAP image traces nothing until
+  // the GM nominates one, because the other may be a GM overlay that must not be sketched onto
+  // player screens.
+  void installChooseMapMenu();
 
   // The drag probe (`./debug/dragProbe`) is deliberately NOT installed. It answered its question
   // — `getItemBounds` is live mid-drag, `getItems` is not — and leaving it running costs two
