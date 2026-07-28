@@ -150,6 +150,29 @@ export interface TraceStats {
    * chains rather than as an obvious failure.
    */
   readonly inkFraction: number;
+  /** Ink pixels in the binarised mask, centerline mode only. */
+  readonly inkPixels: number;
+  /**
+   * Total arc length of the traced skeleton in pixels, before the speck filter.
+   *
+   * Arc length rather than a pixel count, deliberately. Thinning is 8-connected, so a diagonal
+   * step is one pixel but covers √2 of length — counting pixels would understate length by up
+   * to 41%, and would do so more on maps with diagonal linework.
+   */
+  readonly skeletonLength: number;
+  /**
+   * Mean ink stroke width in pixels, centerline mode only. Zero when unmeasurable.
+   *
+   * The skeleton runs down the middle of every stroke, so its arc length *is* the total stroke
+   * length, and ink area over that length is the mean width. Cheap, since both terms are
+   * computed anyway.
+   *
+   * **Filled regions inflate it**: a solid blob has a large area and a short spine, and reports
+   * as one very wide stroke. Callers scaling anything off this should clamp. A distance
+   * transform would give a per-pixel half-width whose median is immune to that, at the cost of
+   * another pass — worth it only if this proves unreliable on real maps.
+   */
+  readonly strokeWidthPx: number;
   /** Contours before the speck filter. */
   readonly rawContours: number;
   readonly rawPoints: number;
@@ -218,13 +241,14 @@ export function traceImage(
   const afterField = now();
 
   let inkFraction = 0;
+  let inkPixels = 0;
   let traced: Contour[];
   let afterMask = afterField;
 
   if (options.mode === "centerline") {
     const mask = buildMask(field, options.centerline);
-    inkFraction =
-      mask.data.length === 0 ? 0 : countInk(mask) / mask.data.length;
+    inkPixels = countInk(mask);
+    inkFraction = mask.data.length === 0 ? 0 : inkPixels / mask.data.length;
 
     const skeleton = buildSkeleton(mask, options.centerline);
     afterMask = now();
@@ -241,7 +265,13 @@ export function traceImage(
   const afterContours = now();
 
   let rawPoints = 0;
-  for (const contour of traced) rawPoints += contour.points.length;
+  let skeletonLength = 0;
+  for (const contour of traced) {
+    rawPoints += contour.points.length;
+    // Measured before the speck filter: specks are ink too, and excluding them would bias the
+    // width estimate toward whatever survived a threshold chosen for a different purpose.
+    skeletonLength += contourLength(contour);
+  }
 
   // Filtered before simplification, on true traced length: after simplification a speck may
   // be three points and a straight-ish 4px wall run may also be three points, and length is
@@ -270,6 +300,9 @@ export function traceImage(
       imageHeight: image.height,
       ...fieldRange(field),
       inkFraction,
+      inkPixels,
+      skeletonLength,
+      strokeWidthPx: skeletonLength > 0 ? inkPixels / skeletonLength : 0,
       rawContours: traced.length,
       rawPoints,
       keptContours: simplified.length,

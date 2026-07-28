@@ -14,14 +14,22 @@ itself. The effect should read as if the party is sketching a map as they explor
 
 ## Status
 
-**In development, not yet installable.** The scaffold builds and loads in a real Owlbear room,
-but it is headless and does nothing visible yet — it only asserts that it can read map pixels.
-See [DESIGN.md](DESIGN.md) for the architecture and the build order.
+**Early, but usable.** Exploration is tracked and persisted per scene, the map is traced into
+hand-drawn linework, and remembered ground is sketched behind the fog. Build order steps 0–6 are
+done apart from the cross-fade, which is deferred; see [DESIGN.md](DESIGN.md).
+
+Rough edges worth knowing before trying it:
+
+- **Dynamic Fog must be installed too** — this extension reads the walls and lights it places.
+- A scene with more than one MAP-layer image traces nothing until the GM picks one: right-click
+  the map and choose **Sketch from this map**. A locked map has to be unlocked to be
+  right-clickable.
+- Fine linework and small text do not survive tracing at typical battlemap resolutions.
+- A rotated map image is not handled — strokes will be misplaced.
 
 ## Installation
 
-Not yet installable. Once there is a release, the extension is added in Owlbear Rodeo via
-**Add Extension** using the manifest URL:
+Added in Owlbear Rodeo via **Add Extension** using the manifest URL:
 
 ```
 https://captainchocolatedessert.github.io/cartographers-fog/manifest.json

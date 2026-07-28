@@ -36,7 +36,9 @@ import {
   unionInto,
   type RegionMask,
 } from "./regionMask";
-import { clearWash, renderWash } from "./wash";
+// `renderWash` is not imported: the wash is no longer drawn, see `render`. `clearWash` stays, so
+// a client that had one on screen from an earlier build loses it on the next scene change.
+import { clearWash } from "./wash";
 import { onMapChoiceChange, readMapChoice } from "../sketch/mapChoice";
 import {
   prepareSketch,
@@ -522,20 +524,22 @@ async function render(): Promise<void> {
   rendering = true;
 
   try {
-    const runs = await renderWash(discovered, visiblePolygons);
-
-    // Both read the same `discovered` and the same visible polygons, but the sketch tests those
-    // polygons directly rather than the wash's cell mask — see `sketch/mask.ts` on why the
-    // moving edge is worth full precision. So the two can disagree by up to half a cell at the
-    // boundary, by design.
-    const drawn = await renderSketch(discovered, visiblePolygons);
+    // The wash (`renderWash`) is deliberately not drawn. It was step 3's stand-in for a renderer
+    // that did not exist yet — a flat marker of where the party had been, useful precisely
+    // because it showed the tracked region and nothing else. The sketch now draws that region
+    // properly, and a translucent slab underneath only muddies it. `wash.ts` stays as DESIGN.md's
+    // rendering mode 3 and as the way to see the raw region when tracking is in doubt.
+    const sketch = await renderSketch(discovered, visiblePolygons);
 
     devLog(
       "info",
-      `region: ${countSet(discovered)} cells discovered, wash drawn as ${runs} runs` +
-        (drawn === null
+      `region: ${countSet(discovered)} cells discovered` +
+        (sketch === null
           ? ", no sketch traced"
-          : `, sketch ${drawn}/${sketchSegmentCount()} segments`),
+          : `, sketch ${sketch.drawn}/${sketchSegmentCount()} segments ` +
+            // Both halves of the wall margin. On a walled scene these are how its size gets
+            // judged: all-zero means it is doing nothing, not that nothing needed doing.
+            `(margin +${sketch.rescued}/-${sketch.suppressed})`),
     );
   } catch (error) {
     devLog("error", "region: wash render failed", error);

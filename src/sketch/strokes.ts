@@ -5,10 +5,13 @@
  * client derives its own sketch from shared state rather than receiving geometry over the
  * network (DESIGN.md §5), and because local items leave nothing behind in the GM's scene.
  *
- * **Deliberately not hand-drawn yet.** Straight polylines in a flat, loud red: this step is
- * about whether the right strokes appear in the right places, and wobble, sepia, dash and fade
- * are build order step 6. A colour that could be mistaken for map art would make a misplaced
- * stroke hard to spot, which is the opposite of what this step needs.
+ * Strokes arrive already wobbled — see `wobble.ts`, which runs once at trace time because the
+ * displacement is static by §6. What this file adds is the drawn *line*: quadratic curves rather
+ * than chained straight edges, sepia ink, and a broken dash.
+ *
+ * Note the debug red is gone as of step 6, and with it the property that a misplaced stroke was
+ * obvious at a glance. Sketch geometry now looks like map art whether or not it is in the right
+ * place.
  */
 
 import OBR, {
@@ -20,6 +23,7 @@ import OBR, {
 
 import { chunkSegments } from "../trace/strokeChunks";
 import type { TracedSegment } from "../trace/chop";
+import type { Vector2 } from "../geometry/vector";
 
 const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
 const SKETCH_KEY = `${NAMESPACE}/sketch-strokes`;
@@ -34,11 +38,33 @@ const SKETCH_KEY = `${NAMESPACE}/sketch-strokes`;
  */
 const SKETCH_LAYER = "CONTROL" as const;
 
-/** Debug red. Step 6 replaces this with the sepia palette. */
-const STROKE_COLOR = "#ff2d2d";
+/**
+ * Sepia ink, chosen against a real map by the author (2026-07-28).
+ *
+ * The landing page's palette is the reference for the project's look — parchment `#f4ecd8`,
+ * ink `#4a3728`, pale sepia `#d9c7a7` — but the right value depends on the fog it is drawn
+ * over, so this was picked by eye in a room rather than taken from the sheet. One constant if
+ * it wants revisiting.
+ */
+const STROKE_COLOR = "#603F21";
 
-/** Stroke width as a fraction of a grid square, so it reads the same on any scene's scale. */
-const STROKE_WIDTH_SQUARES = 1 / 30;
+/**
+ * Stroke width as a fraction of a grid square, so it reads the same on any scene's scale.
+ *
+ * Judged in a room at 1/12 (2026-07-28), up from 1/30 — thin strokes read as a technical
+ * drawing rather than a pen.
+ */
+const STROKE_WIDTH_SQUARES = 1 / 12;
+
+/**
+ * Dash and gap as fractions of a grid square. **Off**, judged in a room 2026-07-28.
+ *
+ * Kept rather than deleted because it is one value from being back: a long dash with a short
+ * gap reads as a hurried stroke, while anything more even reads as a deliberate dashed border,
+ * which is a different thing entirely.
+ */
+const DASH_SQUARES = 0;
+const GAP_SQUARES = 0.035;
 
 /**
  * Replace the sketch with these segments.
@@ -56,7 +82,9 @@ export async function renderStrokes(
 ): Promise<number> {
   const chunks = chunkSegments(segments);
   const strokeWidth = Math.max(1, dpi * STROKE_WIDTH_SQUARES);
-  const items = chunks.map((chunk) => toStrokeItem(chunk, strokeWidth));
+  const dash =
+    DASH_SQUARES > 0 ? [dpi * DASH_SQUARES, dpi * GAP_SQUARES] : [];
+  const items = chunks.map((chunk) => toStrokeItem(chunk, strokeWidth, dash));
 
   await clearStrokes();
   if (items.length > 0) await OBR.scene.local.addItems(items);
@@ -76,17 +104,10 @@ export async function clearStrokes(): Promise<void> {
 function toStrokeItem(
   segments: readonly TracedSegment[],
   strokeWidth: number,
+  dash: readonly number[],
 ): Item {
   const commands: PathCommand[] = [];
-
-  for (const segment of segments) {
-    // One MOVE plus a LINE per remaining point — the cost `strokeChunks` budgets against.
-    const [first, ...rest] = segment.points;
-    if (!first) continue;
-
-    commands.push([Command.MOVE, first.x, first.y]);
-    for (const point of rest) commands.push([Command.LINE, point.x, point.y]);
-  }
+  for (const segment of segments) appendStroke(commands, segment.points);
 
   return (
     buildPath()
@@ -96,6 +117,7 @@ function toStrokeItem(
       .strokeColor(STROKE_COLOR)
       .strokeOpacity(1)
       .strokeWidth(strokeWidth)
+      .strokeDash([...dash])
       // Open polylines, so any fill would flood the area they enclose rather than tint a line.
       .fillOpacity(0)
       .layer(SKETCH_LAYER)
@@ -105,4 +127,47 @@ function toStrokeItem(
       .metadata({ [SKETCH_KEY]: true })
       .build()
   );
+}
+
+/**
+ * Append one stroke as quadratic curves through the vertex midpoints.
+ *
+ * Each vertex becomes a *control* point and the curve passes through the midpoints between
+ * them, which is the standard way to smooth a polyline. Chaining straight edges instead would
+ * put a visible corner at every one of the subdivision points `wobble.ts` inserts — turning a
+ * wobble into a zigzag, and defeating the point of the exercise.
+ *
+ * The command count is unchanged at one per point: a MOVE, a QUAD per interior vertex, and a
+ * closing LINE. `strokeChunks` budgets on `points.length`, so it stays correct as written.
+ */
+export function appendStroke(
+  commands: PathCommand[],
+  points: readonly Vector2[],
+): void {
+  const first = points[0];
+  if (!first || points.length < 2) return;
+
+  commands.push([Command.MOVE, first.x, first.y]);
+
+  // Two points cannot be curved through, so they stay a straight edge.
+  if (points.length === 2) {
+    const last = points[1]!;
+    commands.push([Command.LINE, last.x, last.y]);
+    return;
+  }
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const control = points[i]!;
+    const next = points[i + 1]!;
+    commands.push([
+      Command.QUAD,
+      control.x,
+      control.y,
+      (control.x + next.x) / 2,
+      (control.y + next.y) / 2,
+    ]);
+  }
+
+  const last = points[points.length - 1]!;
+  commands.push([Command.LINE, last.x, last.y]);
 }

@@ -38,6 +38,7 @@
  */
 
 import type { TraceOptions } from "../trace/pipeline";
+import type { WobbleOptions } from "./wobble";
 
 /**
  * Raster width to trace at, matching the harness default. The source is never upscaled to reach
@@ -68,6 +69,45 @@ const WELD_RADIUS_PX = 3;
 
 const SAUVOLA_K = 0.34;
 const MAX_TURN_DEGREES = 40;
+
+// -------------------------------------------------------------------------------------
+// Hand-drawn wobble — build order step 6, DESIGN.md §6
+// -------------------------------------------------------------------------------------
+
+/**
+ * Wobble geometry, in grid squares.
+ *
+ * Genuinely grid-relative, unlike the trace lengths above: these describe how a *hand* moves
+ * across a map, and a grid square is the one unit that means the same thing on every scene.
+ * A token is one square, so an amplitude of 0.02 is a fiftieth of that — the scale of a shaky
+ * line, not a redrawn one.
+ *
+ * All three are aesthetic and meant to be moved. Amplitude is how far the pen strays,
+ * wavelength is how far it travels between strays, and step is how finely a straight run is
+ * broken up before being bent — too coarse and long walls stay visibly ruled.
+ */
+const WOBBLE_AMPLITUDE_SQUARES = 0.02;
+const WOBBLE_WAVELENGTH_SQUARES = 0.35;
+const WOBBLE_STEP_SQUARES = 0.06;
+
+/**
+ * Fixed, and deliberately not derived from the map or the scene.
+ *
+ * Variety comes from position — the noise field differs everywhere — so a per-map seed would
+ * add nothing except the risk of a map redrawing itself differently after a reload.
+ */
+const WOBBLE_SEED = 0x5f3a91;
+
+/** Wobble options for a scene, from its grid size in world units. */
+export function wobbleOptionsFor(dpi: number): WobbleOptions {
+  const squares = dpi > 0 ? dpi : 150;
+  return {
+    amplitude: squares * WOBBLE_AMPLITUDE_SQUARES,
+    wavelength: squares * WOBBLE_WAVELENGTH_SQUARES,
+    step: squares * WOBBLE_STEP_SQUARES,
+    seed: WOBBLE_SEED,
+  };
+}
 
 /**
  * The harness's effective pixels-per-grid figure for a raster downscaled from a source.

@@ -8,7 +8,6 @@
 import OBR from "@owlbear-rodeo/sdk";
 import { installDevLog, devLog, setDevLogLabel } from "./devlog";
 import { assertPixelAccess } from "./probe";
-import { installVisibilityOverlay } from "./debug/visibilityOverlay";
 import { installRegionTracker } from "./region/tracker";
 import { installClearRegionMenu } from "./debug/clearRegionMenu";
 import { installChooseMapMenu } from "./sketch/chooseMapMenu";
@@ -37,9 +36,12 @@ OBR.onReady(async () => {
 
   await runProbe();
 
-  // Development only — draws the CPU visibility polygons over the scene so they can be
-  // compared against the GPU fog. No-ops in production builds.
-  installVisibilityOverlay();
+  // The visibility overlay (`./debug/visibilityOverlay`) is deliberately NOT installed, same as
+  // the two probes below. Its cyan outlines answered step 2's question — the CPU polygons track
+  // the GPU fog, and `attenuationRadius` is the outer edge of the falloff — and they now draw on
+  // top of the sketch they were used to build. Re-install it to re-check that tuning after
+  // changing the sweep, which DESIGN.md §1 expects to be necessary. It was dev-only and
+  // tree-shaken from production regardless, so this changes only what a developer sees.
 
   // Build order step 3: track the discovered region and draw it. Shares one visibility
   // computation with the overlay above. Step 5's traced sketch rides the same lifecycle — the

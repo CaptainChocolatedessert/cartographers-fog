@@ -500,6 +500,75 @@ Levers when this is revisited, in likely order of payoff: `minContourLength`, `b
 `sauvolaRadius`. Tune in the harness, which takes an asset URL directly; the extension logs the
 map's URL for exactly that.
 
+### The hand-drawn pass — as built (2026-07-28), build order step 6
+
+Judged in a room and parked as the first usable build. Sepia `#603F21`, strokes at 1/12 of a
+grid square, no dash, no wash, no debug overlay.
+
+**Wobble is a 2D vector field, not an offset along each stroke's normal.** The normal version is
+the obvious one and it pulls strokes apart: `chop.ts` cuts contours into segments that share
+endpoints, and while the *offset* at a shared point is common to both, the *normal* is computed
+from neighbouring vertices, which differ across a cut landing on a vertex. The two copies then
+move differently and every pre-cut boundary becomes a visible break. A vector field removes the
+failure rather than patching it — displacement depends on position and nothing else, so shared
+points always land together. Part of the offset then runs along the stroke instead of across it,
+which slides a point rather than bending the line, and is invisible in practice.
+
+Two octaves of smoothly interpolated lattice noise, keyed on world position and never on time
+(§6). Applied once at trace time, so it costs nothing per render, and stable across reloads and
+across clients — each of which traces independently.
+
+**Strokes are emitted as `QUAD` curves through vertex midpoints**, not chained `LINE`s. Wobble
+subdivides long runs so they can bend, and joining those points with straight edges puts a
+visible corner at each one — turning a wobble into a zigzag. Command count is one per point
+either way, so the 8192 budget and `strokeChunks` are untouched.
+
+**The wash and the debug overlay are off.** Both were scaffolding for steps they outlived: the
+wash showed the tracked region when nothing else could, and the overlay's cyan outlines settled
+whether the CPU polygons match the GPU fog. Both now draw over the thing they were used to
+build. `wash.ts` remains as rendering mode 3 and as the way to see the raw region if tracking is
+ever in doubt; the overlay remains for re-checking sweep tuning, which §1 expects to recur.
+
+#### The wall margin
+
+Wall linework is the case where masking by a single midpoint fails, and it fails *by
+construction*: a visibility polygon is bounded by the walls, so its boundary **is** the wall; a
+traced stroke runs down the centerline of the wall drawn in the art; and the GM's Dynamic Fog
+wall is drawn approximately along that same art. The midpoint therefore sits within a few units
+of the polygon edge, where `pointInPolygon` guarantees nothing. Which side wins depends on where
+the GM's line falls relative to the art, and that wanders along a wall's length — so wall
+linework would appear in patches along a single wall, and walls are most of what the sketch has
+to show.
+
+Masking therefore samples three points per segment: the midpoint, and ±`margin` along the
+stroke's normal. Perpendicular specifically — a stroke runs *along* a wall, so its own endpoints
+are equally ambiguous and all the uncertainty lies across it.
+
+**Applied to both terms.** Widening only `discovered` would sketch over a wall in plain sight,
+which is exactly what `discovered − currently_visible` exists to prevent. Widened on both, a
+wall stroke is discovered *and* visible while it is being looked at (hidden), then discovered but
+not visible once the party leaves (drawn).
+
+**The margin is measured from the map's ink, not from the grid** (user, 2026-07-28). A grid
+square is the obvious unit and not a dependable one: `getDpi` returns a value even on a scene
+whose grid was never set to match the map, and the margin would be silently wrong.
+`TraceStats.strokeWidthPx` measures the art directly as **ink area over skeleton arc length** —
+the skeleton runs down the middle of every stroke, so its length *is* the total stroke length,
+and both terms are computed anyway. Arc length rather than a skeleton pixel count, because
+thinning is 8-connected and a diagonal step covers √2 while counting as one pixel.
+
+Known weakness: a **filled region** has a large area and a short spine, so it reports as one
+enormously wide stroke. Hence a clamp — expressed as a share of the map's shorter side, not of
+the grid, so it does not reintroduce the dependency being removed — and the grid as a fallback
+only for paths with no measurement. If the estimator proves unreliable, the principled upgrade is
+a distance transform, whose per-pixel half-widths have a median immune to filled regions.
+
+**Both effects are counted and logged** (`margin +rescued/-suppressed`). All zero on a walled
+scene means the margin is misconfigured, not that it was unnecessary — the same lesson as every
+other diagnostic here: a measurement that cannot distinguish its outcomes will be believed
+anyway. **This has not yet been exercised against a walled scene**, so the size is reasoned
+rather than tuned.
+
 **1. Drawn marks — vector strokes** (the mode described in §2/§3/§6/§7). Traced outlines,
 perturbed for a hand-drawn wobble, reading as ink on darkness. Shows remembered *structure*,
 not terrain, which suits the aesthetic: the party's own map, not a view of the room. The only
@@ -886,6 +955,22 @@ Hard on/off toggling at the mask boundary flickers distractingly as tokens move.
 short opacity fade on segments entering and leaving `sketch_region` so it reads as ink
 appearing and receding.
 
+**Deferred (2026-07-28) — a future feature, not part of the first usable build.** Judged in a
+room: hard toggling reads acceptably, and the fade is the one piece of step 6 with a cost worth
+weighing rather than just paying.
+
+That cost is not the animation. Fade is per-item through `PathStyle` opacity, so entering and
+leaving segments have to be tracked as separate cohorts and stepped over several frames — and
+every step is a local item write across the iframe message bus, which is the *same contended
+resource* `getItemBounds` polling depends on (see "Observing movement"). Round trips, not
+geometry, are what bound sampling density there; removing a single `isReady` call took the worst
+observed drag step from 480 units to 105. A fade firing on every token move could measurably
+reopen the gaps the accumulator exists to close.
+
+So when this is built: measure the flush log's longest-step-against-reach figure before and
+after, and be ready to fall back to fading only on *entry*, or to fewer steps. The instrumentation
+is already there.
+
 ---
 
 ## Map pixel access (CORS) — resolved: clean
@@ -1172,4 +1257,7 @@ keeping in the back pocket for a quick visual spike.
    sketch". Rendering mode 1 (drawn marks), in debug red, verified in a room. The rendering-mode
    decision is settled *for this build* rather than closed: modes 2 and 3 remain available and
    nothing about step 5 forecloses them.
-6. Wobble, sepia, dash, fade — the pass that makes it look hand-drawn
+6. **Wobble, sepia, dash, fade — the pass that makes it look hand-drawn.** Wobble, curves,
+   colour and stroke weight are **done 2026-07-28** and judged in a room; see "The hand-drawn
+   pass". Dash was built, judged, and turned off. **Fade is deferred as a future feature** — see
+   §7 for the reason and for what to measure when it is picked up.
