@@ -31,10 +31,14 @@ const SKETCH_KEY = `${NAMESPACE}/sketch-strokes`;
 /**
  * Above FOG, so remembered ground can be drawn into the dark.
  *
- * Same layer as the region wash, and the same open question: `CONTROL` is measured to draw over
- * `FOG`, but it reads semantically as the layer for tool chrome, and the Outliner extension puts
- * comparable marks on `POINTER`. Worth one room test with both extensions installed — see
- * DESIGN.md, "Rendering modes for `sketch_region`". Changing it is this line and `wash.ts`.
+ * `CONTROL` is measured to draw over `FOG` — proven in step 3, when the wash rendered above the
+ * fog for a GM and a player alike. The open question is whether it is the *right* one of the four
+ * layers above `FOG`: it reads semantically as the layer for tool chrome, and the Outliner
+ * extension puts comparable marks on `POINTER`. Worth one room test with both installed — see
+ * DESIGN.md, "Rendering modes for `sketch_region`".
+ *
+ * **This line is the one that matters.** `wash.ts` and `debug/visibilityOverlay.ts` declare their
+ * own layers, but neither is installed, so neither affects what anyone sees.
  */
 const SKETCH_LAYER = "CONTROL" as const;
 

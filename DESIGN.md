@@ -383,8 +383,13 @@ something to look at:
   peer extension chose for exactly this job.
 - **Z-order in practice**, against Outliner and Dynamic Fog both installed.
 
-Neither blocks step 5, and the layer is a one-line change (`wash.ts`'s `WASH_LAYER`) if the
-test says move.
+Neither blocks step 5, and the layer is a one-line change if the test says move.
+
+**Where that line is, as of step 6:** `SKETCH_LAYER` in `src/sketch/strokes.ts`. Three modules
+declare a layer of their own — the sketch, the wash (`WASH_LAYER`) and the debug overlay
+(`OVERLAY_LAYER`) — all currently `CONTROL`, but only the sketch is installed, so it is the only
+one that decides what a player sees. An earlier revision of this section named `wash.ts` as the
+one place to change, which was true when the wash was the only thing drawing and is not any more.
 
 That divides the options by what they can actually put on screen, not by implementation taste.
 They are not mutually exclusive; a build could ship more than one as a user-selectable style.
@@ -499,6 +504,49 @@ Recorded because they are properties of the settings at a given resolution, not 
 Levers when this is revisited, in likely order of payoff: `minContourLength`, `blurSigma`,
 `sauvolaRadius`. Tune in the harness, which takes an asset URL directly; the extension logs the
 map's URL for exactly that.
+
+#### Correcting the sketch by hand — a future feature (raised 2026-07-28)
+
+The tuning limits above are the argument for this: no threshold setting will ever be right
+everywhere on a map, so a trace will always leave some spurious lines and miss some real ones.
+Letting the GM fix that once per map — delete a stray, redraw a wall the thinning ate — would be
+worth more than any amount of further tuning, because it addresses the residue tuning cannot
+reach.
+
+**Why it is not simply "make them scene items."** Sketch strokes are currently local, locked, and
+`disableHit`, and each of those earns its place:
+
+- **`disableHit`** stops hundreds of strokes lying over the map from intercepting every click
+  meant for a token. Without it the sketch is actively hostile in play.
+- **Local** keeps them off the network, which is §5's whole point.
+- **Delete-and-replace on every visibility change** means there is nothing durable to edit —
+  an adjusted stroke would be destroyed by the next token move.
+
+Naively promoting them to scene items breaks §5 twice over: the geometry would be networked, and
+worse, *masking* would become a per-move networked write (toggling `visible` on hundreds of
+items), which is precisely the traffic the architecture exists to avoid.
+
+**The shape that works** separates authored geometry from what is drawn. The traced strokes —
+with the GM's corrections applied — are the durable, shared artifact, stored once per map. What
+each client renders stays exactly as it is now: a locally-derived, locally-drawn subset. Editing
+then costs one write when the GM finishes editing, and nothing per move. Storage is not a barrier
+— a few hundred segments encode well inside the measured metadata headroom.
+
+**Two problems to solve before building it:**
+
+- **Stroke identity across a re-trace.** Storing corrections as a diff ("segment 143 deleted") is
+  compact but fragile: changing any trace setting renumbers everything, so the corrections would
+  reattach to the wrong lines. Storing the full corrected geometry avoids that but discards the
+  ability to re-trace at all. Neither is obviously right.
+- **An edit mode.** Selection needs hit-testing back on, which is only tolerable while
+  deliberately editing. That implies a UI toggle, and therefore the settings UI that does not
+  exist yet.
+
+**A cheaper version worth considering first: erase, don't edit.** Let the GM paint out regions
+where the trace is wrong, rather than manipulate individual strokes. That handles deleting
+spurious lines — probably most of the value — with none of the identity problem, since an erase
+mask is the same shape of object as the discovered region and can reuse that machinery wholesale.
+Redrawing strokes by hand is the expensive half, and it is separable.
 
 ### The hand-drawn pass — as built (2026-07-28), build order step 6
 
@@ -1208,6 +1256,10 @@ keeping in the back pocket for a quick visual spike.
   (see §4), yet centre-sampling then *under*-reports by up to half a cell at every boundary.
   Any-overlap would make the two consistent. Judge it visually rather than by argument — the
   difference is half a cell, and whether that shows depends entirely on the renderer.
+- **Hand-correcting the sketch.** Raised by the user 2026-07-28 and deferred — see "Correcting
+  the sketch by hand". The architecture does not forbid it, but it needs a stroke-identity
+  decision and an edit-mode UI, and the erase-only version may capture most of the value for a
+  fraction of the work.
 - **Trace calibration across maps.** The shipped settings are the harness defaults, judged on
   one map and confirmed workable on a second (see "Trace resolution" for why they are pixel
   constants rather than the grid-relative ones they appear to be). Two things are outstanding
