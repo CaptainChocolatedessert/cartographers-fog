@@ -18,6 +18,7 @@ import OBR from "@owlbear-rodeo/sdk";
 
 import { loadMapRaster, resolveSketchMap } from "./mapImage";
 import { selectSketchSegments } from "./mask";
+import { readSketchSettings } from "./sketchSettings";
 import { marginSource, wallMargin } from "./wallMargin";
 import { clearStrokes, renderStrokes } from "./strokes";
 import { toWorldSegments } from "./placement";
@@ -59,6 +60,17 @@ export async function prepareSketch(): Promise<boolean> {
   tracing = true;
 
   try {
+    // Checked before anything expensive. Switched off means no trace at all, not a trace held
+    // back from rendering — the point of the toggle is a scene whose map traces badly, and a
+    // few hundred milliseconds spent producing linework nobody will see is the wrong shape of
+    // "off".
+    const { enabled } = await readSketchSettings();
+    if (!enabled) {
+      devLog("info", "sketch: switched off for this scene");
+      await resetSketch();
+      return false;
+    }
+
     const map = await resolveSketchMap();
     if (!map) {
       traced = null;

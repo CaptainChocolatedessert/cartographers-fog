@@ -1,7 +1,7 @@
 /**
  * Getting map pixels out of the scene, at the resolution the trace wants.
  *
- * Two jobs: decide *which* image to trace (see `mapChoice.ts` — never a guess when more than
+ * Two jobs: decide *which* image to trace (see `sketchSettings.ts` — never a guess when more than
  * one is present), and turn it into a `PixelImage` plus the placement that puts the result back
  * where the map is.
  *
@@ -16,7 +16,7 @@
 // `loadImage` needs, and a type-only binding cannot be called.
 import OBR, { isImage, type Image as ImageItem } from "@owlbear-rodeo/sdk";
 
-import { readMapChoice } from "./mapChoice";
+import { readSketchSettings } from "./sketchSettings";
 import { selectMapCandidates } from "./mapCandidates";
 import {
   aspectMismatch,
@@ -64,7 +64,7 @@ export async function resolveSketchMap(): Promise<ImageItem | null> {
     return null;
   }
 
-  const chosenId = await readMapChoice();
+  const { mapId: chosenId } = await readSketchSettings();
   if (chosenId) {
     const chosen = maps.find((map) => map.id === chosenId);
     if (chosen) return chosen;

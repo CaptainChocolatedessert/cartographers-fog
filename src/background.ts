@@ -9,8 +9,8 @@ import OBR from "@owlbear-rodeo/sdk";
 import { installDevLog, devLog, setDevLogLabel } from "./devlog";
 import { assertPixelAccess } from "./probe";
 import { installRegionTracker } from "./region/tracker";
-import { installClearRegionMenu } from "./debug/clearRegionMenu";
-import { installChooseMapMenu } from "./sketch/chooseMapMenu";
+import { installResetMenu } from "./region/resetMenu";
+import { installSketchMenus } from "./sketch/sketchMenu";
 
 installDevLog();
 
@@ -48,19 +48,19 @@ OBR.onReady(async () => {
   // tracker owns `discovered` and the visible polygons, which are exactly what masking needs.
   void installRegionTracker();
 
-  // Ships, unlike the dev menu below: a scene with more than one MAP image traces nothing until
-  // the GM nominates one, because the other may be a GM overlay that must not be sketched onto
-  // player screens.
-  void installChooseMapMenu();
+  // The GM's controls, both shipping. Nominating a map is required on a scene with more than one
+  // MAP image, since the other may be a GM overlay that must not be sketched onto player screens;
+  // the toggle is how a scene whose map traces badly gets the sketch switched off.
+  void installSketchMenus();
+
+  // Also ships. The discovered region only ever grows, so without a reset a GM who has explored
+  // a scene has no way back to an unexplored one.
+  void installResetMenu();
 
   // The drag probe (`./debug/dragProbe`) is deliberately NOT installed. It answered its question
   // — `getItemBounds` is live mid-drag, `getItems` is not — and leaving it running costs two
   // extra bounds round trips per light every 100ms, competing with the region tracker's poll for
   // exactly the resource that now limits sampling density. Re-install it to re-measure.
-
-  // Development only. Right-click any item -> "Clear explored region" to reset a scene back to
-  // unexplored, which is what makes discovery testable more than once.
-  void installClearRegionMenu();
 
   // The storage probe (`./debug/storageProbe`) is deliberately NOT called any more. Its three
   // questions are answered and the numbers are recorded in DESIGN.md, "Storage limits". Leaving

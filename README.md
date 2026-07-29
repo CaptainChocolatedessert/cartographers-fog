@@ -27,6 +27,18 @@ Rough edges worth knowing before trying it:
 - Fine linework and small text do not survive tracing at typical battlemap resolutions.
 - A rotated map image is not handled — strokes will be misplaced.
 
+### GM controls
+
+Right-click any item as the GM. There is no settings panel yet, so these live on the context
+menu:
+
+- **Sketch from this map** — nominate which MAP image is traced. Only needed when a scene has
+  more than one, and the map has to be unlocked to be right-clickable.
+- **Clear sketch** — delete the sketch from this scene. Nothing is lost: it is derived from the
+  map, so *Sketch from this map* redraws it whenever you want it back.
+- **Reset explored area** — forget everything the party has explored in this scene. **There is
+  no confirmation**, and it cannot be undone.
+
 ## Installation
 
 Added in Owlbear Rodeo via **Add Extension** using the manifest URL:

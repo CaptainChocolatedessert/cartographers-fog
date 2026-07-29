@@ -432,6 +432,40 @@ Two refinements came out of the first room test, and the order matters:
 Where no choice has been made and one candidate survives, it is traced. Otherwise nothing is
 traced and the candidates are logged with their sizes and lock state. **Never guess.**
 
+#### The GM's controls, pending a settings UI
+
+Three context-menu entries ship, all GM-only, all in lieu of the panel this project keeps
+deferring: **Sketch from this map**, **Clear sketch**, and **Reset explored area**.
+
+The reset is the one worth explaining. It began dev-gated, on the reasoning that wiping a scene's
+exploration with one click is right for testing and wrong for a table. That was backwards: the
+discovered region is persistent and only ever grows, so gating the reset meant a GM who explored
+a scene had **no way back at all**. Starting a session fresh on ground the party has already
+walked is ordinary, and nothing else can undo it.
+
+**Clearing the sketch is one-way, and deliberately not a toggle.** Nothing is lost by it: the
+linework is derived from the map, so nominating a map redraws it. Reversible-toggle machinery
+would be ceremony around an action that is already free to undo, and it would need to answer a
+question a context menu cannot — a menu filter matches the *item* right-clicked, so it has no way
+to read scene metadata and label itself by current state.
+
+What is stored is the **suppression**, not a deletion, and storing it is the necessary part:
+without it the next scene load would re-derive the sketch and undo the clearing. An explicit
+`false` is required rather than merely forgetting the nomination, because on the common one-map
+scene an absent choice falls back to "trace the only map there is" — so clearing the nomination
+alone would resurrect the sketch immediately. It is checked *before* tracing rather than before
+rendering, since spending a few hundred milliseconds producing linework nobody will see is the
+wrong shape of gone.
+
+The recovery path runs through the map's own context menu, so the notification names it. That
+matters more than usual: a locked map cannot be right-clicked, so a GM who clears the sketch on a
+scene with a locked map must unlock it to get the sketch back.
+
+**The reset is not confirmed**, because a confirmation needs `OBR.modal` or a context-menu
+`embed`, and both want an HTML page. `ContextMenuItem.embed` is the cheaper of the two — it
+renders inside the menu itself — and is the natural first step if a confirmation is wanted before
+the full settings panel exists.
+
 #### Trace resolution — a cap, not a target
 
 The raster is `min(sourceWidth, 1024)`, which is the trace harness's default and therefore the

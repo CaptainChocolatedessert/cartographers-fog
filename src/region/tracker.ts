@@ -39,7 +39,11 @@ import {
 // `renderWash` is not imported: the wash is no longer drawn, see `render`. `clearWash` stays, so
 // a client that had one on screen from an earlier build loses it on the next scene change.
 import { clearWash } from "./wash";
-import { onMapChoiceChange, readMapChoice } from "../sketch/mapChoice";
+import {
+  onSketchSettingsChange,
+  readSketchSettings,
+  type SketchSettings,
+} from "../sketch/sketchSettings";
 import {
   prepareSketch,
   renderSketch,
@@ -133,12 +137,12 @@ let rendering = false;
 let renderAgain = false;
 
 /**
- * Which map the sketch is currently traced from, so a metadata change that leaves it alone does
- * not trigger a re-trace. `onMapChoiceChange` rides `scene.onMetadataChange`, which also fires
- * for every region write this client makes — several a minute during play, against a trace
- * costing a few hundred milliseconds.
+ * The sketch settings this client last acted on, so a metadata change that leaves them alone
+ * does not trigger a re-trace. `onSketchSettingsChange` rides `scene.onMetadataChange`, which
+ * also fires for every region write this client makes — several a minute during play, against a
+ * trace costing a few hundred milliseconds.
  */
-let sketchMapId: string | undefined;
+let sketchSettings: SketchSettings | undefined;
 
 /**
  * Guards the bounds reads against re-entry, so a slow round trip cannot queue ticks behind each
@@ -233,13 +237,18 @@ async function initialiseForScene(): Promise<void> {
 
   unsubscribeVisibility = subscribeVisibility(handleSnapshot);
 
-  // Re-trace when the GM nominates a different map, on every client. Gated on the id actually
-  // changing: this subscription shares `scene.onMetadataChange` with the region writes, which
-  // land several times a minute during play.
-  sketchMapId = await readMapChoice();
-  unsubscribeMapChoice = onMapChoiceChange((itemId) => {
-    if (itemId === sketchMapId) return;
-    sketchMapId = itemId;
+  // Re-trace when the GM nominates a different map or toggles the sketch, on every client.
+  // Gated on the settings actually changing: this subscription shares `scene.onMetadataChange`
+  // with the region writes, which land several times a minute during play.
+  sketchSettings = await readSketchSettings();
+  unsubscribeMapChoice = onSketchSettingsChange((settings) => {
+    if (
+      settings.mapId === sketchSettings?.mapId &&
+      settings.enabled === sketchSettings?.enabled
+    ) {
+      return;
+    }
+    sketchSettings = settings;
     void buildSketch();
   });
 
@@ -267,7 +276,7 @@ async function teardownScene(): Promise<void> {
   unsubscribeRegion = undefined;
   unsubscribeMapChoice?.();
   unsubscribeMapChoice = undefined;
-  sketchMapId = undefined;
+  sketchSettings = undefined;
   // A queued redraw belongs to the scene being torn down; letting it fire would repaint from
   // state the next scene is about to replace.
   renderAgain = false;
