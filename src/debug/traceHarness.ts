@@ -382,9 +382,14 @@ function drawSegments(
     }
 
     context.beginPath();
+    // +0.5 for the same reason `sketch/placement.ts` applies it: a traced coordinate names a
+    // pixel, while canvas coordinate (x, y) is that pixel's top-left corner. Without it the
+    // linework draws half a pixel up and left of the map it is being judged against — which is
+    // exactly the misplacement the extension shipped, so the harness would have agreed with the
+    // bug and disagreed with the fix.
     const [first, ...rest] = segment.points;
-    context.moveTo(first!.x, first!.y);
-    for (const point of rest) context.lineTo(point.x, point.y);
+    context.moveTo(first!.x + 0.5, first!.y + 0.5);
+    for (const point of rest) context.lineTo(point.x + 0.5, point.y + 0.5);
     context.stroke();
   });
 }
@@ -397,8 +402,8 @@ function drawMidpoints(
   context.fillStyle = "#c04a2a";
   for (const segment of segments) {
     context.fillRect(
-      segment.midpoint.x - size / 2,
-      segment.midpoint.y - size / 2,
+      segment.midpoint.x + 0.5 - size / 2,
+      segment.midpoint.y + 0.5 - size / 2,
       size,
       size,
     );

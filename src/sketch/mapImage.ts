@@ -190,6 +190,35 @@ export async function loadMapRaster(map: ImageItem): Promise<MapRaster | null> {
     );
   }
 
+  // The placement geometry itself, because `MAX_ASPECT_MISMATCH` is stated as a *ratio* while
+  // what a single scale makes of it is a *displacement*, and nobody had converted between the two.
+  // At this raster a silent 1% mismatch is nearly 8 pixels — which on a map whose wall linework is
+  // ~3px wide would put strokes clear of the walls they were traced from.
+  //
+  // The last figure is what the per-axis placement is **absorbing**, not an error it is leaving
+  // behind: it is how far a width-derived scale would have pushed the map's bottom row, which is
+  // exactly the bug fixed on 2026-07-31 (DESIGN.md, "Strokes drift off the wall down the map"). It
+  // stays in the log because it is the one number that says whether a given map is the shape this
+  // bug needed — read it as "how much work the y scale is doing here", and expect a non-zero value
+  // on any map nudged out of proportion to line up with the grid.
+  //
+  // Logged unconditionally rather than gated on a threshold: a diagnostic that only fires when
+  // something is already known to be wrong cannot tell "fine" from "never ran" (DESIGN.md's
+  // recurring lesson, most expensively in the region accumulator).
+  const worldHeight = bounds.max.y - bounds.min.y;
+  const unitsPerPixelX = rasterWidth > 0 ? worldWidth / rasterWidth : 0;
+  const unitsPerPixelY = rasterHeight > 0 ? worldHeight / rasterHeight : 0;
+  const absorbed = rasterHeight * (unitsPerPixelX - unitsPerPixelY);
+  devLog(
+    "info",
+    `sketch: placement origin (${bounds.min.x.toFixed(1)}, ${bounds.min.y.toFixed(1)}) ` +
+      `world ${worldWidth.toFixed(1)}x${worldHeight.toFixed(1)} over raster ` +
+      `${rasterWidth}x${rasterHeight}; units/px x ${unitsPerPixelX.toFixed(4)} ` +
+      `y ${unitsPerPixelY.toFixed(4)} (aspect mismatch ${(mismatch * 100).toFixed(3)}%), ` +
+      `per-axis scaling absorbing ${absorbed >= 0 ? "+" : ""}${absorbed.toFixed(1)} ` +
+      `world units at the map's bottom edge that a single scale would have drifted`,
+  );
+
   let pixels: PixelImage;
   try {
     pixels = drawToPixels(source, rasterWidth, rasterHeight);
@@ -228,7 +257,11 @@ export async function loadMapRaster(map: ImageItem): Promise<MapRaster | null> {
     mapId: map.id,
     url: map.image.url,
     pixels,
-    placement: createPlacement({ min: bounds.min, max: bounds.max }, rasterWidth),
+    placement: createPlacement(
+      { min: bounds.min, max: bounds.max },
+      rasterWidth,
+      rasterHeight,
+    ),
     pixelsPerGrid: perGrid,
     scenePixelsPerGrid: sceneDensity,
   };

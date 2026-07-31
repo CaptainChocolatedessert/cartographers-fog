@@ -539,42 +539,93 @@ Levers when this is revisited, in likely order of payoff: `minContourLength`, `b
 `sauvolaRadius`. Tune in the harness, which takes an asset URL directly; the extension logs the
 map's URL for exactly that.
 
-#### Open: strokes sit at one edge of a wall, not down its middle (2026-07-31)
+#### Strokes drift off the wall down the map — diagnosed and fixed (2026-07-31)
 
-Observed by the user on "Lair Of The Lamb": sketch strokes follow the wall linework but sit at
-one side of it rather than centred — and **not consistently the same side**, which is the
-detail that matters for diagnosis.
+Observed by the user on "Lair Of The Lamb": sketch strokes follow the wall linework but sit
+toward one side of it rather than centred. **The trace was never at fault.** The cause was the
+placement transform applying the width's scale to both axes, and the fix is per-axis scaling plus
+a half-pixel centring correction, both in `sketch/placement.ts`.
 
-Two things this is *not*. The wobble is far too small: 3 world units of displacement against a
-wall band of roughly 42. And it is not the placement transform, which would shift every stroke
-the same way rather than picking a different side per wall. (A half-pixel question does exist
-there — whether traced coordinates denote pixel centres or corners, worth 5 world units at this
-map's scale — but it is uniform in direction and cannot explain side-to-side variation.)
+The diagnosis is worth keeping in full, because nearly every step of the first attempt was wrong
+in an instructive way.
 
-That leaves the binarisation, and the likely explanation is that **what the threshold calls ink
-is not the wall band a human sees**. Two candidates, distinguishable by looking:
+##### What it turned out to be
 
-- **Sauvola hollows out a wide uniform band.** It is a *document* binariser, tuned for thin
-  strokes: its deviation term suppresses detection where local variance is low, which is exactly
-  the interior of a thick, evenly-filled wall. The band then binarises to its two edges, and the
-  skeleton follows those rather than the middle. This predicts *two* strokes per wall, so if only
-  one survives, pruning or welding is discarding the other — worth checking rather than assuming.
-- **The map's ink genuinely is asymmetric.** Many hand-drawn maps outline a wall heavily on one
-  side and lightly on the other. The centerline of the *ink* is then legitimately off the centre
-  of the *band*, and the trace is behaving correctly on a map whose linework is not symmetric.
-  This predicts the side varies with how the artist drew each wall — which matches the report.
+The map's world bounds are **not a uniform scaling of its pixels**: 3.1137 world units per source
+pixel across against 3.1041 down, a 0.275% discrepancy — the signature of a map nudged slightly
+out of proportion to line its art up with the scene grid. `createPlacement` derived one scale from
+the width and applied it to both axes, so that discrepancy became a y error growing from zero at
+the map's top edge to **+21.7 world units** at the bottom, against wall linework about 30 units
+wide. Strokes left the walls they were traced from, low, and worse the further down the map.
 
-**The diagnostic is cheap and visual.** Load the map's asset URL into `trace.html` and step
-through the background layers: `mask` shows what was classified as ink, `skeleton` shows what was
-thinned from it. A hollowed band is unmistakable in the mask preview. Do this before changing any
-constant — the two causes want opposite responses. If Sauvola is hollowing the band, the lever is
-`sauvolaRadius` (a window wide enough to span the band restores interior contrast) or contour
-mode, which DESIGN.md already notes is the right answer for filled regions. If the ink is simply
-asymmetric, nothing is wrong and the fix is a matter of taste rather than correctness.
+A second, smaller error compounded it: traced coordinates name pixel *centres* while `bounds.min`
+is the raster's outer *corner*, so every stroke also sat half a pixel — 5 world units — up and
+left. Both trace modes share that convention (the skeleton walk emits pixel indices; marching
+squares samples at pixel centres and keys crossings to the same lattice), so the `+0.5` is
+unconditional.
 
-Note the interaction with the ink-width estimator: if wide bands are binarising to their edges,
-the measured "stroke width" is describing edge lines rather than walls, which changes what the
-inflated 42.5-unit figure recorded above actually means.
+The two partly cancelled near the top of the map and reinforced each other lower down, which is
+why the artifact read as "off centre" rather than "sliding".
+
+##### Why the guard did not catch it
+
+`MAX_ASPECT_MISMATCH` was set at 1% to absorb rounding in the raster height, and it did. But its
+*consequence* under a single scale is a displacement, and nobody converted: **1% of 791 raster
+rows is 7.9 pixels, or 79 world units** — more than two wall widths. A tolerance stated as a ratio
+was silently licensing a drift measured in world units.
+
+Per-axis scaling makes the mismatch harmless for an unrotated image, and also absorbs the raster
+height's rounding exactly (791 rows standing in for 791.27), which a width-derived scale cannot.
+So the guard is now purely a rotation detector, and is documented as one.
+
+##### Two candidates that were recorded here and were both wrong
+
+This section previously blamed the binariser, on the strength of the sides varying per wall.
+Measured in the harness against the real map, both are dead:
+
+- **"Sauvola hollows out a wide uniform band."** It predicts two skeleton lines per wall; measured,
+  106 of 113 horizontal wall crossings yield exactly **one**. A hollowed band would also pull the
+  mask's centroid off the ink, and that offset measures −0.05 px. The premise was wrong too: this
+  map's walls are ~3 px in the traced raster, against a Sauvola window of 25 px, so there was never
+  a wide uniform interior to hollow.
+- **"The map's ink is genuinely asymmetric."** Same measurement, both axes, essentially zero.
+
+**The trace is correct in raster space.** The skeleton sits on the wall's dark core with a *median
+offset of exactly zero*, and traced points land 0.41 px from the skeleton on average, 1.61 px at
+worst. What remains is a consistent −0.25 px thinning bias — the even-width artifact, where a band
+with no true centre row keeps one of the two middle ones. That is ~2.5 world units and is left
+alone.
+
+##### The lessons, which are the reusable part
+
+- **The harness cannot see this class of bug, and that is structural.** It works entirely in pixel
+  space and has no world mapping, so a placement error is invisible in it *by construction*. The
+  artifact was diagnosed only once the harness and the room were compared and found to disagree in
+  *direction* — the harness showed strokes high, Owlbear showed them low. Where those two disagree,
+  the fault is in the stage the harness does not run. (`traceHarness.ts` had the same half-pixel
+  convention error in its own drawing, now fixed, so it agreed with the bug and would have
+  disagreed with the fix.)
+- **"Not consistently the same side" was a misreading, and it sent the diagnosis to the wrong
+  file.** The offset was in fact strongly directional; it looked random because it *grows down the
+  map* and because x and y misbehave differently — x is exact by construction, so vertical walls
+  showed only the constant half-pixel while horizontal walls showed the growing drift. The user's
+  own correction ("on a horizontal wall it seems to always be low") is what reopened it.
+- **A wall's width is not `strokeWidthPx`.** The reasoning that dismissed the half-pixel as too
+  small measured it against a 42.5-unit band, but that figure is the *mask* width, and the mask
+  over-extends the visible dark core by roughly 0.8 px per side. The wall a human sees is ~3.0 px
+  ≈ 30 world units. Dismissing a small error requires the right denominator, and this one was
+  inflated by a third.
+- **The diagnostic that settled it is now permanent.** `mapImage.ts` logs the placement geometry
+  and the implied y drift at the map's bottom edge on every trace, unconditionally — not gated on
+  a threshold, because a diagnostic that only fires when something is known to be wrong cannot
+  distinguish "fine" from "never ran".
+
+##### What to check if it recurs
+
+Read the `sketch: placement origin …` line. `units/px x` and `y` should be near-identical, and
+`y drift at the map's bottom edge` should be near zero. A large value means the map is out of
+proportion in a way the per-axis scale should have absorbed, which would point at the bounds
+rather than the placement — most likely rotation, which is still unhandled.
 
 #### Correcting the sketch by hand — a future feature (raised 2026-07-28)
 
@@ -705,7 +756,16 @@ suppressed). The problem it was built for is real rather than theoretical.
 
 **1. The estimator's error and the multiplier compensate for each other.** A measured stroke
 width of 42.5 world units is **0.28 of a grid square** — fat for linework, and almost certainly
-the filled-region inflation described above, since this map's walls are solid. The margin lands
+the filled-region inflation described above, since this map's walls are solid.
+
+*Refined 2026-07-31, while diagnosing the placement bug below.* Filled regions are not the whole
+story: the mask itself runs **~0.8 px wider per side than the visible dark core**, measured at
+4.6 px against 3.0 px on this map. So `strokeWidthPx` describes the *mask*, and the wall a human
+sees is nearer **30 world units than 42.5**. That does not change the conclusion — if anything it
+strengthens it, since the inflation now has two independent sources — but it does mean the true
+denominator is smaller than this section assumed, so any error being weighed against "a 42-unit
+band" is a third larger in proportion than it looks. That mistake is what kept the half-pixel
+placement error dismissed for a session. The margin lands
 at 0.43 of a grid square, well under its clamp, which never bound.
 
 So the distance-transform upgrade proposed above is **not a safe isolated improvement**. Making

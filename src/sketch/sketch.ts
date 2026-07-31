@@ -101,14 +101,17 @@ export async function prepareSketch(): Promise<boolean> {
 
     // Measured from the map's own ink rather than the grid, because `getDpi` still returns a
     // value on a scene whose grid never matched the map.
-    const strokeWidthWorld =
-      result.stats.strokeWidthPx * raster.placement.unitsPerPixel;
+    //
+    // The x scale alone: an ink width has no direction, so under a per-axis placement there is no
+    // one factor to convert it by. The axes agree to a fraction of a percent on anything but a
+    // visibly stretched map, and this estimator's own inflation is an order of magnitude larger.
+    const unitsPerPixel = raster.placement.unitsPerPixel.x;
+    const strokeWidthWorld = result.stats.strokeWidthPx * unitsPerPixel;
     const marginInputs = {
       strokeWidthWorld,
       dpi,
       mapExtent:
-        Math.min(raster.pixels.width, raster.pixels.height) *
-        raster.placement.unitsPerPixel,
+        Math.min(raster.pixels.width, raster.pixels.height) * unitsPerPixel,
     };
     const margin = wallMargin(marginInputs);
 
