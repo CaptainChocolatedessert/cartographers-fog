@@ -539,6 +539,43 @@ Levers when this is revisited, in likely order of payoff: `minContourLength`, `b
 `sauvolaRadius`. Tune in the harness, which takes an asset URL directly; the extension logs the
 map's URL for exactly that.
 
+#### Open: strokes sit at one edge of a wall, not down its middle (2026-07-31)
+
+Observed by the user on "Lair Of The Lamb": sketch strokes follow the wall linework but sit at
+one side of it rather than centred — and **not consistently the same side**, which is the
+detail that matters for diagnosis.
+
+Two things this is *not*. The wobble is far too small: 3 world units of displacement against a
+wall band of roughly 42. And it is not the placement transform, which would shift every stroke
+the same way rather than picking a different side per wall. (A half-pixel question does exist
+there — whether traced coordinates denote pixel centres or corners, worth 5 world units at this
+map's scale — but it is uniform in direction and cannot explain side-to-side variation.)
+
+That leaves the binarisation, and the likely explanation is that **what the threshold calls ink
+is not the wall band a human sees**. Two candidates, distinguishable by looking:
+
+- **Sauvola hollows out a wide uniform band.** It is a *document* binariser, tuned for thin
+  strokes: its deviation term suppresses detection where local variance is low, which is exactly
+  the interior of a thick, evenly-filled wall. The band then binarises to its two edges, and the
+  skeleton follows those rather than the middle. This predicts *two* strokes per wall, so if only
+  one survives, pruning or welding is discarding the other — worth checking rather than assuming.
+- **The map's ink genuinely is asymmetric.** Many hand-drawn maps outline a wall heavily on one
+  side and lightly on the other. The centerline of the *ink* is then legitimately off the centre
+  of the *band*, and the trace is behaving correctly on a map whose linework is not symmetric.
+  This predicts the side varies with how the artist drew each wall — which matches the report.
+
+**The diagnostic is cheap and visual.** Load the map's asset URL into `trace.html` and step
+through the background layers: `mask` shows what was classified as ink, `skeleton` shows what was
+thinned from it. A hollowed band is unmistakable in the mask preview. Do this before changing any
+constant — the two causes want opposite responses. If Sauvola is hollowing the band, the lever is
+`sauvolaRadius` (a window wide enough to span the band restores interior contrast) or contour
+mode, which DESIGN.md already notes is the right answer for filled regions. If the ink is simply
+asymmetric, nothing is wrong and the fix is a matter of taste rather than correctness.
+
+Note the interaction with the ink-width estimator: if wide bands are binarising to their edges,
+the measured "stroke width" is describing edge lines rather than walls, which changes what the
+inflated 42.5-unit figure recorded above actually means.
+
 #### Correcting the sketch by hand — a future feature (raised 2026-07-28)
 
 The tuning limits above are the argument for this: no threshold setting will ever be right
