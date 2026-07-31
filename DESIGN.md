@@ -648,8 +648,56 @@ a distance transform, whose per-pixel half-widths have a median immune to filled
 **Both effects are counted and logged** (`margin +rescued/-suppressed`). All zero on a walled
 scene means the margin is misconfigured, not that it was unnecessary — the same lesson as every
 other diagnostic here: a measurement that cannot distinguish its outcomes will be believed
-anyway. **This has not yet been exercised against a walled scene**, so the size is reasoned
-rather than tuned.
+anyway.
+
+##### Measured on a real walled map (2026-07-31)
+
+Run on "Lair Of The Lamb", 10275x7915 world units — 68.5 grid squares, traced at a 1024 raster:
+
+```
+ink 4.2px wide (62291 px over 14699px of skeleton) = 42.5 world units,
+wall margin 63.8 from ink
+... sketch 166/2003 segments (margin +38/-7)
+```
+
+**The margin does real work.** About a quarter of the wall linework on screen at that moment was
+drawn only because of it, and it stayed active throughout (`+2` to `+7` per redraw, `-1/-2`
+suppressed). The problem it was built for is real rather than theoretical.
+
+**But two things about *why* it works are worth knowing, and neither is comfortable.**
+
+**1. The estimator's error and the multiplier compensate for each other.** A measured stroke
+width of 42.5 world units is **0.28 of a grid square** — fat for linework, and almost certainly
+the filled-region inflation described above, since this map's walls are solid. The margin lands
+at 0.43 of a grid square, well under its clamp, which never bound.
+
+So the distance-transform upgrade proposed above is **not a safe isolated improvement**. Making
+the width measurement accurate would shrink it toward the true stroke width, and the margin with
+it — possibly below what makes wall linework appear at all. The estimator and
+`MARGIN_STROKE_WIDTHS` are entangled: change one and re-measure the counters, or wall linework
+will quietly go patchy again. This is exactly the kind of thing a later session would tidy up
+without realising it was load-bearing.
+
+**2. Its safety so far is a property of the map, not of the margin** (user, 2026-07-31). That map
+has generous space around its rooms, so a margin reaching 0.43 squares past the discovered edge
+finds nothing to reveal. **On a tighter map it would.** A stroke belonging to an unexplored room
+across a thin wall can have its perpendicular sample land in the explored room next door, and be
+drawn — showing the party a room they have never entered. That is a genuine spoiler, and it is
+*not* covered by §4's argument that over-reporting is harmless: that argument was about ground
+glimpsed at a distance, not about the room next door.
+
+**The remedy if it appears — occlusion-gate the samples.** Reject a margin sample when a wall
+lies between it and the segment's midpoint. Wall segments are already in the visibility snapshot,
+and `geometry/segment.ts` already has `rayHitDistance` for exactly this shape of test. It gets
+the cases right by construction: a stroke *on* a wall has both samples start at the wall and
+travel away from it, so neither is blocked and whichever side is explored still rescues it; while
+a stroke inside the next room has its sample toward the explored room blocked by the wall between
+them, and is correctly left undrawn.
+
+Note this is not the wall-gated interpolation rejected under "Routes that do not work". That one
+narrowed an assumption about *where a token went* without removing it. This asks a question with
+a definite answer — is there a wall between these two points — and uses it to decline, never to
+infer.
 
 **1. Drawn marks — vector strokes** (the mode described in §2/§3/§6/§7). Traced outlines,
 perturbed for a hand-drawn wobble, reading as ink on darkness. Shows remembered *structure*,
@@ -758,6 +806,39 @@ Two edge cases this rule does not yet cover:
 - **More than one GM.** If Owlbear permits several GM-role players, "the GM writes" is
   ambiguous and reintroduces the read-modify-write race. Needs a deterministic tiebreak — the
   lowest player id among GMs would do.
+
+#### Revisit: should each client derive the sketch at all? (raised 2026-07-29)
+
+Worth reopening eventually, and explicitly *not* urgent — the per-client architecture is running
+in real sessions and working. Recorded because the reasoning that produced it has partly expired.
+
+There is an asymmetry in the current design that is easy to miss. Two things are derived per
+client, and they are treated differently: the **discovered region** is computed locally but
+shared as authoritative state with a single writer, while the **sketch** is computed locally and
+never shared at all. The original justification was size — a traced sketch is thousands of path
+commands, against a region that is a few kilobytes. **That argument is weaker than it was.** The
+storage probe found no metadata limit below 512KB per key, and a traced sketch encodes to tens of
+kilobytes, so "too big to share" is no longer obviously true.
+
+The user's observation is that storing the sketch as scene items might also bear on the two edge
+cases above. Worth being careful about how far that goes: neither case is *caused* by the sketch
+being local — both are about who accumulates the region — so item storage does not fix them
+directly. What it does is remove one of the two independent derivations, which makes the
+remaining question ("who computes, and who writes") a single problem to solve once rather than a
+pattern repeated with different answers. A leader election that covers no-GM and multi-GM would
+then cover everything.
+
+What still argues for local derivation, and would have to be given up:
+
+- **Per-player fog is nearly free** while each client renders from its own visibility. Sharing
+  one authoritative sketch means one sketch for everybody.
+- **Local items leave nothing behind.** Nothing to be accidentally selected, deleted, or picked
+  up by the GM's undo history, and everything vanishes cleanly when the extension is removed.
+- **Masking must stay local regardless.** Even with shared geometry, toggling which segments show
+  is a per-move operation, and doing that over the network is exactly what §5 exists to prevent.
+  So a move here splits the sketch into shared *geometry* and local *visibility* — which is the
+  same shape the hand-editing feature needs (see "Correcting the sketch by hand"). The two should
+  be designed together if either is built.
 
 ### Observing movement — `getItemBounds` is live, `getItems` is not
 
@@ -1294,6 +1375,11 @@ keeping in the back pocket for a quick visual spike.
   the sketch by hand". The architecture does not forbid it, but it needs a stroke-identity
   decision and an edit-mode UI, and the erase-only version may capture most of the value for a
   fraction of the work.
+- **Storing the sketch as shared state rather than deriving it per client.** Raised 2026-07-29,
+  deliberately parked — the current design is running in sessions and working. See "Revisit:
+  should each client derive the sketch at all?". Note it lands on the same split as
+  hand-correcting does (shared geometry, local visibility), so if either is built they should be
+  designed together.
 - **Trace calibration across maps.** The shipped settings are the harness defaults, judged on
   one map and confirmed workable on a second (see "Trace resolution" for why they are pixel
   constants rather than the grid-relative ones they appear to be). Two things are outstanding

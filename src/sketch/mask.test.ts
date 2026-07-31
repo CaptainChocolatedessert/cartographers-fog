@@ -197,9 +197,9 @@ describe("the wall margin", () => {
       { x: 0, y: wallY },
     ];
 
-    expect(selectSketchSegments([stroke], discovered, sight ? [sight] : [], 20).segments).toEqual(
-      [],
-    );
+    expect(
+      selectSketchSegments([stroke], discovered, [sight], 20).segments,
+    ).toEqual([]);
   });
 
   it("counts what it suppressed", () => {
