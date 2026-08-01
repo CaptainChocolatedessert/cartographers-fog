@@ -1343,6 +1343,10 @@ distance field over three segments:
 - **Custom uniforms work** — seven of them, `Vector2` and `float`.
 - **Constant-bound `for` loops compile.**
 - **An SDF gives genuinely soft edges and continuous taper** along a single mark.
+- **It rasterises at display resolution.** Zoomed hard in, the soft edge stays smooth and never
+  resolves into pixels (user, 2026-08-01). Nothing is stored as a bitmap: the shader is a *rule*
+  re-evaluated per screen pixel at the current zoom, exactly as a `Path` is re-rasterised. This is
+  the fact the whole approach rests on, so it was checked rather than assumed.
 - **World mapping is stable under pan and zoom**, with no swimming and no crawling texture. Done by
   normalising `coord` against the built-in `size` and interpolating across a world rect passed in,
   so it holds however those are scaled — `model`/`modelView` were not needed. This was the decisive
@@ -1352,26 +1356,135 @@ distance field over three segments:
 So the sketch could become a few dozen `Effect` items carrying segment endpoints, with soft edges,
 taper and grain for free, no `Path` items, no stencil, and no nib geometry.
 
-**What still needs measuring before this is a design rather than a possibility:**
+#### Build plan: a `shader` renderer alongside the existing one
 
-- **Uniform count per effect, and the per-pixel cost of the loop.** J used three segments. The
-  sketch currently carries ~19k points after wobble subdivision, so grouping and chunking decide
-  whether this is thirty effects or three hundred.
-- **Overdraw.** Each effect shades its whole rectangle, so segments want grouping *spatially* or a
-  great many empty pixels get shaded.
-- **Smoothness.** The present renderer gets curves free from `QUAD` path commands; an SDF over
-  straight segments needs dense points to read as smooth. The wobble already subdivides finely, so
-  this may cost nothing — or it may be the thing that forces the point count up.
-- **A promising way out of both, untested:** the wobble is a position-based displacement, so the
-  shader could apply it by *domain warping* — displace the sample point before measuring distance,
-  rather than displacing the geometry. That would let the simplified polyline (~1.3k points) be
-  passed instead of the subdivided one (~19k), roughly a fifteenfold reduction. Whether warped
-  distances stay well-behaved enough to shade is the open part.
-- **Masking** becomes rebuilding uniform sets rather than adding and deleting items, which is
-  probably cheaper, but it is a different shape of work per redraw and has not been measured.
+Written 2026-08-01 to be executed later, so it assumes no memory of the conversation that produced
+it. **The governing principle is that the existing renderer is untouched**: new files, a setting to
+choose between them, and each clears the other's items when switching. Nothing here is a
+replacement until it has been judged better in a room.
 
-Also still untested throughout: the cost of a large `Effect`, and scene items rather than the local
-ones used in every cell here.
+##### How it draws, in one paragraph
+
+Today we hand Owlbear a shape and it decides the pixels. An `Effect` inverts that: we hand it a
+world-space rectangle and a per-pixel program, and pass the stroke geometry in as numeric uniforms.
+For each pixel the program converts its position to world coordinates, measures the distance to the
+nearest line piece, and turns that distance into ink — solid near the centreline, fading over a
+narrow band, transparent beyond. Everything wanted follows from that last step being ours: soft
+edges, width varying along a stroke, and grain *within* a single mark, which is the one thing the
+multi-pass pencil could not do. One effect carries a *batch* of pieces and takes the minimum
+distance across them, so strokes inside a batch merge seamlessly.
+
+##### Decisions already made, and why
+
+- **Fixed batch size, with unused slots padded.** The program declares N slots; which geometry
+  occupies a slot is a uniform. To hide a stroke, park its slot far outside the batch's bounds so
+  its distance never wins the minimum. **This is what keeps the SkSL source constant.** The
+  alternative — generating source containing only the visible pieces — would recompile a shader
+  every time a token moves, which is almost certainly fatal. Park the sentinel about ten times the
+  batch span outside its bounds: guaranteed to lose, and it keeps the squared terms in the distance
+  maths far from the edge of float range.
+- **Individually-named uniforms with an unrolled loop**, generated as a string. Whether the SDK
+  supports uniform *arrays* is untested, and `Uniform.value` admits only a single number, vector or
+  matrix. Generating `p0a, p0b, … p63a, p63b` and unrolling sidesteps the question entirely, and a
+  fixed batch size means one source compiled once.
+- **Empty slots still cost.** Every pixel runs the whole loop regardless of occupancy, so a batch
+  holding four pieces costs what a full one does. Keep batches reasonably full, and do not choose a
+  batch size far above typical occupancy.
+- **Masking is unchanged.** `mask.ts` still decides visibility per segment, midpoint plus wall
+  margin, against `discovered` minus `currently_visible`. Only what is *built* from the result
+  changes: uniform sets instead of path commands.
+- **v1 consumes the same wobbled geometry as the current renderer**, so the two are comparable and
+  the plan stays decoupled from the unproven domain-warping idea below.
+
+##### Phase 0 — measure, before building anything
+
+The batch size decides everything downstream, and it is unknown. Re-install a probe in the style of
+`debug/blendProbe.ts` (retired but kept) and answer, in order:
+
+1. **Max uniforms per effect.** Ladder 16, 32, 64, 128, 256 named `float2`s. Find where it refuses
+   or hangs — and distinguish those two, as `dataUrlProbe.ts` had to.
+2. **Per-pixel cost** at the largest workable batch, over a rectangle around ten grid squares
+   across. Pan while watching for frame-rate loss.
+3. **Batch seam.** Two adjacent batches with a stroke crossing the boundary. Strokes in different
+   effects composite as separate items, so two soft edges may darken where they meet. Is it visible?
+
+**Then compute the item count** at current geometry: ~19k points after wobble subdivision means
+~17k line pieces, so at 64 per batch that is **~270 effects, against ~3 `Path` items today**.
+
+**Decision point.** If that count looks heavy, promote domain warping into v1 rather than deferring
+it — see below; it changes the figure by more than tenfold. If the workable batch size is under
+about 32, stop and reconsider the whole approach.
+
+Record the numbers in this document either way. Already answered, and not worth re-testing: the
+shader rasterises at display resolution and stays smooth at any zoom, and world mapping is stable
+under pan and zoom.
+
+##### Phase 1 — `src/sketch/sdf.ts` (pure: no SDK, no DOM, unit-tested)
+
+- `toPieces(segments)` — flatten each `TracedSegment` polyline into point pairs.
+- `batchPieces(pieces, batchSize)` — group **spatially**, since each effect shades its whole
+  rectangle and a batch of scattered pieces wastes most of it. A uniform world grid keyed on each
+  piece's midpoint is enough; bucket, then split any bucket over `batchSize`.
+- `batchBounds(batch, halfWidth, feather)` — world bounding box **expanded by half-width plus
+  feather**, or strokes clip at the batch edge.
+- `buildUniforms(batch, bounds, appearance, batchSize)` — always returns exactly `batchSize` slots,
+  padding with the sentinel described above.
+- `sdfSource(batchSize)` — generate the SkSL once. Map `coord` to world by normalising against the
+  built-in `size` and interpolating across a world rect passed as uniforms; this is what makes it
+  stable under zoom, and `model`/`modelView` are not needed.
+
+**Tests:** flattening preserves order and yields `points − 1` pieces per segment; every piece lands
+in exactly one batch; no batch exceeds `batchSize`; bounds contain every piece plus the margin;
+padded slots fall outside the bounds; the uniform list length is always exactly `batchSize`.
+
+##### Phase 2 — `src/sketch/shaderStrokes.ts` (the SDK half)
+
+Mirror `strokes.ts` deliberately: `renderShaderStrokes(segments, dpi, appearance)` and
+`clearShaderStrokes()`. Same layer `CONTROL`, `locked`, `disableHit`, local items, `STANDALONE`,
+`SRC_OVER`, no parent — and **its own metadata key**, so the two renderers can find and clear their
+own items independently.
+
+##### Phase 3 — the switch
+
+- `appearance.ts`: add `renderer: "strokes" | "shader"`, defaulting to `"strokes"`. Include it in
+  `differs` but **not** in `invalidatesTrace` — the geometry is identical, only the drawing changes.
+- `sketch.ts` `renderSketch`: dispatch on it, and **clear both renderers' items before drawing**, or
+  switching leaves the old sketch on screen underneath the new one.
+- `panel.html` / `panel.ts`: a two-option control under Appearance.
+
+##### Phase 4 — judge in a room
+
+Switch both ways and confirm nothing is left behind. Then tune the feather width and grain by eye,
+which is the only part that decides whether this ships.
+
+##### Phase 5 — incremental updates (deferred, but nearly free once padding exists)
+
+Keep the batch *set* stable across redraws and vary only which slots are parked. A token moving
+changes occupancy in a few nearby batches; every other batch keeps its item untouched — no adds, no
+deletes, no recompilation, just a uniform write to the handful that changed. That would be **better
+than the current renderer**, which rebuilds everything on every visibility change.
+
+##### Deferred: domain warping
+
+The wobble is a position-based displacement, so the shader could apply it by displacing the *sample
+point* before measuring distance, rather than displacing the geometry. That would let the simplified
+polyline (~1.3k points) be passed instead of the subdivided one (~19k) — roughly a fifteenfold
+reduction in pieces, and therefore in items. It may also yield natural width variation for free,
+since warping stretches and compresses apparent distance.
+
+The open part is whether warped distances stay well-behaved enough to shade: the distortion scales
+with the warp's *gradient*, roughly amplitude over wavelength, which at the upper end of the wobble
+range is substantial. Worth a probe cell before committing.
+
+##### Known limits, so they are not rediscovered
+
+- The shader sees **only** what is passed as numbers — no textures, no images, and nothing about the
+  map, the fog, the discovered region, or any stroke outside its own batch.
+- Complexity is paid **per pixel per frame**, unlike a `Path` whose cost is in geometry and paid
+  once.
+- It is stateless and local: no previous frames, no sampling neighbours, no global view.
+- An effect cannot alter what is beneath it — cells C, D and I settled that.
+- Scene items rather than the local ones used in every probe cell remain untested.
 
 **Note the shader route was never going to reach a texture image anyway.** `Uniform.value` admits
 only `number | Vector2 | Vector3 | Matrix` — there is no shader or image uniform type, so a custom
