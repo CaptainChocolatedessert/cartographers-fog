@@ -76,6 +76,52 @@
         background: #ffffff1f;
       }
 
+      /*
+       * The tab strip. Buttons rather than links, because nothing here is navigable — and the
+       * global `button` rule above sets `width: 100%` and a left-aligned label for the stacked
+       * action buttons, both of which have to be undone here.
+       */
+      .tabs {
+        display: flex;
+        gap: 2px;
+        margin: 0 0 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .tabs button {
+        width: auto;
+        flex: 1;
+        text-align: center;
+        background: none;
+        border: none;
+        border-radius: 0;
+        padding: 7px 4px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--dim);
+        /* Reserves the selected row's space so switching tabs does not nudge the panel by a pixel. */
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tabs button:hover {
+        color: var(--text);
+        background: none;
+      }
+      .tabs button[aria-selected="true"] {
+        color: var(--text);
+        border-bottom-color: var(--accent);
+      }
+
+      /*
+       * Each panel starts its own heading run, so the `h2:first-of-type` rule above — which is
+       * scoped to the document, not to a container — would only spare the first panel's heading its
+       * top margin and leave the other two indented from the tab strip.
+       */
+      [role="tabpanel"] > h2:first-child {
+        margin-top: 0;
+      }
+
       .maps {
         display: flex;
         flex-direction: column;
@@ -157,11 +203,70 @@
       being told they are not for them.
     -->
     <div id="gmOnly" hidden>
-      <h2>Map to sketch</h2>
-      <div class="maps" id="maps"></div>
-      <p id="mapsEmpty" hidden>No MAP-layer image in this scene.</p>
+      <!--
+        Three tabs. `data-panel` is what panel.ts switches on, so adding a tab means adding a button
+        and a matching [role="tabpanel"] and nothing else.
+      -->
+      <div class="tabs" role="tablist" aria-label="Settings">
+        <!--
+          Appearance opens first, not Setup. Setup is where a scene is configured once; Appearance
+          is where a GM returns repeatedly to tune the look by eye, and the panel is rebuilt on
+          every open, so the tab it lands on is the one that costs nothing to reach.
+        -->
+        <button role="tab" data-panel="panelSetup" aria-selected="false" aria-controls="panelSetup" tabindex="-1">
+          Setup
+        </button>
+        <button
+          role="tab"
+          data-panel="panelAppearance"
+          aria-selected="true"
+          aria-controls="panelAppearance"
+        >
+          Appearance
+        </button>
+        <button
+          role="tab"
+          data-panel="panelDebug"
+          aria-selected="false"
+          aria-controls="panelDebug"
+          tabindex="-1"
+        >
+          Debug
+        </button>
+      </div>
 
-      <h2>Appearance</h2>
+      <!-- 1. Setup — what gets sketched, and what counts as explored. -->
+      <div id="panelSetup" role="tabpanel" aria-label="Setup" hidden>
+        <h2>Map to sketch</h2>
+        <div class="maps" id="maps"></div>
+        <p id="mapsEmpty" hidden>No MAP-layer image in this scene.</p>
+
+        <hr />
+        <h2>Explored area</h2>
+        <div class="actions">
+          <button id="revealAll">Mark whole map explored</button>
+          <button id="clear">Clear sketch</button>
+          <button id="reset" class="danger">Reset explored area</button>
+        </div>
+      </div>
+
+      <!-- 2. Appearance — how the ink looks. Nothing here changes what is drawn, only how. -->
+      <div id="panelAppearance" role="tabpanel" aria-label="Appearance">
+      <div class="row">
+        <label for="renderer">Drawing</label>
+        <!--
+          Two ways of putting the same geometry on screen. "Soft" is the default: shader Effects
+          that draw the marks themselves, which is the only way to get an edge that fades — a Path's
+          silhouette is hard at every setting. "Lines" emits Path items and is far cheaper to draw,
+          so it is the fallback if the shader is slow on a scene. Switching costs a redraw, not a
+          re-trace.
+        -->
+        <select id="renderer">
+          <option value="shader">Soft (shader)</option>
+          <option value="strokes">Lines</option>
+        </select>
+      </div>
+      <p id="rendererNote" class="hint"></p>
       <div class="row">
         <label for="color">Ink</label>
         <input type="color" id="color" value="#603F21" />
@@ -197,12 +302,37 @@
       </div>
       <p id="wobbleNote" hidden>Re-tracing the map…</p>
 
-      <h2>Pencil</h2>
-      <p class="hint">
-        Each stroke drawn several times, faintly, along slightly different paths. One pass is
-        off.
-      </p>
-      <div class="row">
+      <!--
+        Shader renderer only. A Path's silhouette is hard at every setting, so under "Lines" this
+        control would do nothing at all — and a slider that moves without changing anything is worse
+        than an absent one.
+      -->
+      <div id="shaderOnly" hidden>
+        <div class="row">
+          <label for="feather">Edge</label>
+          <!--
+            Hundredths of the stroke's half-width. 0 is a hard edge — which is what "Lines" gives —
+            and 100 fades from the centreline outward, leaving no solid core.
+          -->
+          <input type="range" id="feather" min="0" max="100" step="5" value="35" />
+          <output id="featherValue">33%</output>
+        </div>
+        <p id="featherNote" class="hint"></p>
+      </div>
+
+      <!--
+        Path renderer only, and the reason is the mirror of the above: passes exist because
+        `PathStyle` is per-item, so faint displaced copies were the only way to vary a stroke's
+        texture. The shader varies ink within a single mark, which is the thing passes worked
+        around — so under "Soft" they would only multiply the item count.
+      -->
+      <div id="strokesOnly">
+        <h2>Pencil</h2>
+        <p class="hint">
+          Each stroke drawn several times, faintly, along slightly different paths. One pass is
+          off.
+        </p>
+        <div class="row">
         <label for="passes">Passes</label>
         <input type="range" id="passes" min="1" max="4" step="1" value="1" />
         <output id="passesValue">1</output>
@@ -225,16 +355,41 @@
         <input type="range" id="scatter" min="0" max="80" step="2" value="0" />
         <output id="scatterValue">off</output>
       </div>
-      <p id="pencilNote" class="hint"></p>
-
-      <hr />
-      <h2>Explored area</h2>
-      <div class="actions">
-        <button id="revealAll">Mark whole map explored</button>
-        <button id="clear">Clear sketch</button>
-        <button id="reset" class="danger">Reset explored area</button>
+        <p id="pencilNote" class="hint"></p>
+        </div>
       </div>
 
+      <!-- 3. Debug — erasing stored data. -->
+      <div id="panelDebug" role="tabpanel" aria-label="Debug" hidden>
+        <h2>Stored data</h2>
+        <p class="hint">
+          This extension's data lives in the scene and the room on Owlbear's servers, not in the
+          extension — so removing and reinstalling it changes nothing. These erase it.
+        </p>
+        <div class="actions">
+          <button id="eraseScene" class="danger">Erase this scene's data</button>
+          <button id="eraseRoom" class="danger">Erase appearance settings</button>
+        </div>
+        <p class="hint">
+          Scene data is the explored region, the map nomination and the off switch. Appearance is
+          room-wide, so it affects every scene in this room.
+        </p>
+        <!--
+          Stated because it is a real limit and would otherwise look like a bug. The SDK's scene
+          metadata calls take no scene id and there is no way to enumerate scenes, so an extension
+          can only ever reach the scene that is open.
+        -->
+        <p class="hint">
+          Other scenes keep their own data. Open a scene to erase it.
+        </p>
+      </div>
+
+      <!--
+        Outside the panels on purpose. `say()` reports failures from Appearance writes as well as
+        from the Setup buttons, so a status line living inside Setup would swallow "Could not save
+        that setting" whenever the GM was on another tab — a silent failure, which is the one thing
+        this line exists to prevent.
+      -->
       <p id="status"></p>
     </div>
 

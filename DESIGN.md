@@ -1419,6 +1419,120 @@ Record the numbers in this document either way. Already answered, and not worth 
 shader rasterises at display resolution and stays smooth at any zoom, and world mapping is stable
 under pan and zoom.
 
+##### Phase 0 — MEASURED 2026-08-01, and no ceiling was found
+
+Run by `debug/uniformProbe.ts` (kept, not installed) on the Lair Of The Lamb map. All three
+questions answered, and the stop condition is nowhere near.
+
+**1. Max uniforms per effect: not reached.** Every rung of 16/32/64/128/256 was accepted, and the
+top rung — **256 slots, 517 uniforms** — drew a complete, regular lattice of 256 separate ticks.
+Nothing was rejected and nothing hung. The plan's "stop if the workable batch is under 32" does not
+bite by an order of magnitude.
+
+The lattice is what makes this a real answer rather than a hopeful one. The first run drew each rung
+as a *serpentine* and every rung above 16 came back as a solid brown slab, because the rows were
+packed closer than a stroke is wide. **A slab proves the shader compiled and says nothing about
+whether the individual slots are right** — a shader mangling slots above 64 would paint the same
+slab. Redrawn as separate ticks, the 256 cell showed 13 full rows of 19 plus a **partial row of 9**,
+which is exactly the predicted layout. Every slot distinct and in its place.
+
+Same shape of mistake as the earlier probe cells whose parent filled the effect's whole rect: a
+diagnostic that saturates cannot report what it was built to report.
+
+**2. Per-pixel cost: no frame-rate loss** panning and zooming over one 64-slot effect spanning ten
+grid squares (user, 2026-08-01). **This measures one effect, not the whole sketch** — the full
+render is 100+ effects and that cost is not established until phase 2 draws it.
+
+**3. Batch seam: none visible.** A stroke split across two abutting effects is indistinguishable from
+the same stroke in one. Caution for anyone re-running it: the probe's own cyan cell outline runs
+along the join and reads as a seam artefact at a glance (user's observation). It is not one.
+
+**4. Padding works** — the mechanism the whole renderer rests on, drawn for the first time. 64 slots
+with 6 occupied gives six clean marks and no stray ink. Not on the plan's list; added because a
+sentinel that leaked would be catastrophic and untestable headlessly.
+
+**Edges read as soft** (user, 2026-08-01), which is the judgment the approach exists for.
+
+**Item count, from this map's real numbers rather than the estimate above.** 2003 segments and 9644
+points after wobble means **~7.6k pieces**, not the ~17k guessed — so at 64 per batch that is about
+**120 effects, not 270**. Against ~3 `Path` items today.
+
+**So the batch size should NOT be the maximum, and this is the non-obvious part.** Bigger batches
+mean fewer items but *more total shading work*: every pixel runs the whole unrolled chain, so
+doubling the slot count roughly doubles both the chain length and the area each batch covers — about
+4× the work per batch against half as many batches, i.e. roughly double overall. The uniform ceiling
+turns out not to be the binding constraint; per-pixel cost is. **Pick the smallest batch size whose
+item count is acceptable**, which is why v1 ships 64 rather than the 256 that was proven to work.
+`sdf.ts` takes it as a parameter, so this is one constant to revisit once phase 2 has real numbers.
+
+##### Batch size, measured in a room 2026-08-01 — the prediction above held
+
+Phase 2 rendered, and the shader look was judged good (user: "Soft (shader) looks good and pan and
+zoom are fine"). Then the batch size was tested against panning:
+
+```
+256 slots,  ~30 effects   UNUSABLY choppy at every reasonable zoom, still better zoomed in
+ 64 slots, ~120 effects   usable; choppy only with the whole map on screen, smooth zoomed in
+ 32 slots, ~240 effects   better again; NOT distinguishable from 64 by eye
+```
+
+**Shipping 32, and 32-vs-64 is deliberately left unresolved** (user, 2026-08-01: "that feels better
+again, I'm not sure how it compares to 64 — let's make a note that this could be optimized but leave
+it for now"). The by-eye comparison has bottomed out: the difference between adjacent settings is now
+smaller than the judgment can resolve, so **further tuning of this constant needs a frame-time
+measurement rather than another opinion.** Do not run more eye tests on it; they cannot answer.
+
+**Per-pixel cost dominates, and the arithmetic above predicted the magnitude.** 4× the slots gave
+roughly 4× the shading and made it unusable. Item count is emphatically not the thing to optimise.
+
+**A wrong turn worth recording, because the evidence genuinely looked like it pointed the other
+way.** The zoom dependence at 64 — choppy zoomed out, smooth zoomed in — was read as proof that
+*per-item* overhead dominates, on the argument that per-pixel cost is zoom-invariant: zoomed out
+every effect is on screen and the rectangles tile the map to about one viewport, while zoomed in a
+quarter as many are on screen but each covers four times the screen area, so the shaded-pixel total
+should be about equal. That reasoning is sound as far as it goes, and it inverted the conclusion to
+"take the largest batch". The room demolished it in one test.
+
+What the argument missed is that both costs are real and they are not comparable in size. A fixed
+per-effect cost does exist — it is exactly why zooming in helps at a *constant* slot count — but it
+is far smaller than the per-pixel term, so a zoom comparison at fixed batch size can reveal the
+minor term while saying nothing about the major one. **A comparison that holds the dominant variable
+constant cannot rank it against the one being varied.** Same shape as the earlier probe cells that
+changed two things at once, in a subtler dress.
+
+**The second cost term is overdraw**, and it is worth naming separately because it responds to a
+different fix. An effect shades its entire rectangle, and traced linework is sparse, so most of every
+box is empty pixels running the full chain for nothing. Smaller batches shrink the boxes *and* the
+chain, which is why moving down helps twice over. Tightening the batching so boxes hug their
+geometry attacks the same term without costing more items, and is the next lever if the slot count
+bottoms out.
+
+##### Parked: making the shader renderer faster
+
+Deliberately not pursued (user, 2026-08-01). It is usable at 32 and the look is judged good; this is
+a list of what to reach for if it ever needs to be quicker, roughly in expected value order.
+
+- **Tighten the batch bounding boxes.** The largest known waste. `batchPieces` buckets on a uniform
+  world grid, so a bucket holding a few pieces scattered across its cell still gets a box spanning
+  the whole cell, every pixel of which runs the full chain. Splitting a bucket by *tightness* rather
+  than only by count — or subdividing any box whose ink covers little of its area — cuts shading
+  without adding a single item. It also does not touch the shader, so it cannot regress the look.
+- **Domain warping** (already written up below). Passing the simplified ~1.3k-point polyline instead
+  of the subdivided ~7.6k-piece one is roughly a fifteenfold reduction in pieces, which shrinks both
+  the item count and every bounding box. The largest single win available, and the least certain —
+  it changes the geometry the shader sees, so the look has to be re-judged.
+- **Phase 5, incremental updates.** Note this attacks a *different* axis and would not help panning
+  at all: it removes the rebuild-everything cost when a token moves, not the per-frame shading cost.
+  Worth knowing which symptom is which — choppy panning is shading, a stutter on token movement is
+  the rebuild.
+
+**Measure before choosing.** The by-eye method is exhausted at this resolution, and all three of
+these are much larger changes than moving one constant.
+
+**Domain warping stays deferred.** The decision point above says promote it if the item count looks
+heavy; at ~120 effects it does not, and the plan's reason for deferring — keeping v1 comparable to
+the existing renderer by eye — still holds.
+
 ##### Phase 1 — `src/sketch/sdf.ts` (pure: no SDK, no DOM, unit-tested)
 
 - `toPieces(segments)` — flatten each `TracedSegment` polyline into point pairs.
@@ -1446,16 +1560,38 @@ own items independently.
 
 ##### Phase 3 — the switch
 
-- `appearance.ts`: add `renderer: "strokes" | "shader"`, defaulting to `"strokes"`. Include it in
+- `appearance.ts`: add `renderer: "strokes" | "shader"`, defaulting to `"strokes"` — **moved to
+  `"shader"` on 2026-08-01 once it had been judged; see "Phase 4" below.** Include it in
   `differs` but **not** in `invalidatesTrace` — the geometry is identical, only the drawing changes.
 - `sketch.ts` `renderSketch`: dispatch on it, and **clear both renderers' items before drawing**, or
   switching leaves the old sketch on screen underneath the new one.
 - `panel.html` / `panel.ts`: a two-option control under Appearance.
 
-##### Phase 4 — judge in a room
+##### Phase 4 — judged in a room 2026-08-01. It ships, and it is now the default.
 
 Switch both ways and confirm nothing is left behind. Then tune the feather width and grain by eye,
 which is the only part that decides whether this ships.
+
+**Outcome: it ships.** The user ran it in a real room and judged the soft-edged look good, with pan
+and zoom fine (at `BATCH_SIZE = 32`; see the batch size measurements above, which were the only
+difficulty). `DEFAULT_APPEARANCE.renderer` moved to `"shader"` on their decision.
+
+**The `Path` renderer is kept rather than removed**, and not out of sentiment: it is roughly two
+orders of magnitude cheaper to draw — a handful of items against a couple of hundred effects — so it
+remains the answer for a scene where the shader is slow, or a client that struggles with it. The
+panel presents it as the fallback rather than as the previous version.
+
+**The default change reaches existing rooms on purpose.** `fromRoomMetadata` falls back per field, so
+a room whose stored appearance predates the `renderer` key takes the new default and switches to soft
+edges on its next reload. A room that prefers the old look picks Lines, and that choice persists — a
+test pins that an explicit `"strokes"` survives, since otherwise moving the default would amount to
+removing the option.
+
+**Feather ships as a slider** (`featherFraction`, 0–1 of the stroke's half-width, default 1/3) rather
+than the constant this plan assumed, because it is the one control the shader route adds and the
+value was picked by eye on a probe rather than measured. Grain is **not** implemented — the SDF
+shader draws a clean soft-edged mark and no procedural texture was added, so the "grain" this plan
+anticipated remains available and unexplored.
 
 ##### Phase 5 — incremental updates (deferred, but nearly free once padding exists)
 

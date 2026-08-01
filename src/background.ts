@@ -62,6 +62,14 @@ OBR.onReady(async () => {
   // extra bounds round trips per light every 100ms, competing with the region tracker's poll for
   // exactly the resource that now limits sampling density. Re-install it to re-measure.
 
+  // The uniform probe (`./debug/uniformProbe`) is deliberately NOT installed, retired 2026-08-01
+  // having answered phase 0 of the shader renderer: 256 slots and 517 uniforms per effect are
+  // accepted with no ceiling found, padded sentinel slots draw nothing, one 64-slot effect over ten
+  // grid squares costs no visible frame rate, and a stroke split across two effects shows no seam.
+  // Numbers and the reasoning about batch size are in DESIGN.md, "Phase 0 — MEASURED". Re-install it
+  // to re-measure after changing `sdfSource`; note its ladder must draw SEPARATE marks per slot, as
+  // a saturated cell cannot tell a working slot count from a broken one.
+
   // The render probes (`./debug/blendProbe`, `./debug/dataUrlProbe`) are deliberately NOT
   // installed, and retired for the same reason as the two below: they answered their questions and
   // then drew bars, cyan patches and swatch boxes over the map on every scene open. All three

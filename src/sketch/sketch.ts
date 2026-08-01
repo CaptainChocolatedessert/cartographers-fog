@@ -23,6 +23,7 @@ import { selectSketchSegments } from "./mask";
 import { readSketchSettings } from "./sketchSettings";
 import { marginSource, wallMargin } from "./wallMargin";
 import { clearStrokes, renderStrokes } from "./strokes";
+import { clearShaderStrokes, renderShaderStrokes } from "./shaderStrokes";
 import { pencilPasses } from "./pencil";
 import { toWorldSegments } from "./placement";
 import { traceOptionsFor, wobbleOptionsFor } from "./traceSettings";
@@ -106,14 +107,14 @@ export async function prepareSketch(): Promise<boolean> {
     const map = await resolveSketchMap();
     if (!map) {
       traced = null;
-      await clearStrokes().catch(() => {});
+      await clearBothRenderers();
       return false;
     }
 
     const raster = await loadMapRaster(map);
     if (!raster) {
       traced = null;
-      await clearStrokes().catch(() => {});
+      await clearBothRenderers();
       return false;
     }
 
@@ -241,7 +242,17 @@ export async function renderSketch(
       ? [selection.segments]
       : traced.passes.map((pass) => selection.indices.map((i) => pass[i]!));
 
-  await renderStrokes(drawn, traced.dpi, appearance);
+  // Dispatch, and clear the *other* renderer's items on the way through. Each renderer clears only
+  // its own key, so without this line switching leaves the previous sketch on screen underneath the
+  // new one — which looks like a rendering bug and makes the comparison the switch exists for
+  // impossible. Cheap when nothing is there: a filtered `getItems` that matches nothing.
+  if (appearance.renderer === "shader") {
+    await clearStrokes().catch(() => {});
+    await renderShaderStrokes(drawn, traced.dpi, appearance);
+  } else {
+    await clearShaderStrokes().catch(() => {});
+    await renderStrokes(drawn, traced.dpi, appearance);
+  }
 
   return {
     drawn: selection.segments.length,
@@ -267,5 +278,18 @@ function countPoints(segments: readonly TracedSegment[]): number {
 /** Forget the trace and remove its strokes — a scene change, or a new map nomination. */
 export async function resetSketch(): Promise<void> {
   traced = null;
+  await clearBothRenderers();
+}
+
+/**
+ * Remove whatever is on screen, whichever renderer put it there.
+ *
+ * Every path that means "there should be no sketch now" has to clear *both*, not just the one the
+ * current setting names. A GM who switches to the shader renderer and then turns the sketch off for
+ * the scene would otherwise be left looking at the `Path` sketch the previous setting drew — and
+ * the toggle would appear broken rather than the clearing being incomplete.
+ */
+async function clearBothRenderers(): Promise<void> {
   await clearStrokes().catch(() => {});
+  await clearShaderStrokes().catch(() => {});
 }

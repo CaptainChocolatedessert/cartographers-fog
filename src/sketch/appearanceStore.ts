@@ -44,6 +44,21 @@ export async function writeAppearance(
   return next;
 }
 
+/**
+ * Remove the appearance key entirely, so every client falls back to `DEFAULT_APPEARANCE`.
+ *
+ * **Room-wide, not scene-scoped.** Room metadata follows the GM across every scene in the room, so
+ * this is not "reset this scene's look" and must not be offered as though it were. It is a separate
+ * action from erasing a scene's data for exactly that reason.
+ *
+ * Note this is a blind write rather than the read-modify-write `writeAppearance` uses. That guard
+ * exists to avoid clobbering a concurrent partial change; here clobbering the whole key *is* the
+ * operation, so composing with a concurrent write would only preserve part of what is being erased.
+ */
+export async function eraseAppearance(): Promise<void> {
+  await OBR.room.setMetadata({ [APPEARANCE_KEY]: undefined });
+}
+
 export function onAppearanceChange(
   callback: (appearance: Appearance) => void,
 ): () => void {

@@ -34,8 +34,10 @@ import {
   MAX_WOBBLE_SQUARES,
   MIN_WIDTH_SQUARES,
   type Appearance,
+  type Renderer,
 } from "./sketch/appearance";
 import {
+  eraseAppearance,
   onAppearanceChange,
   readAppearance,
   writeAppearance,
@@ -44,6 +46,7 @@ import { effectiveOpacity } from "./sketch/pencil";
 import { listMapImages, type MapImageSummary } from "./sketch/mapImage";
 import {
   clearSketch,
+  eraseSketchSettings,
   onSketchSettingsChange,
   readSketchSettings,
   writeMapChoice,
@@ -63,6 +66,8 @@ const gmOnly = element("gmOnly");
 const playerOnly = element("playerOnly");
 const mapsBox = element("maps");
 const mapsEmpty = element("mapsEmpty");
+const rendererInput = element<HTMLSelectElement>("renderer");
+const rendererNote = element("rendererNote");
 const colorInput = element<HTMLInputElement>("color");
 const widthInput = element<HTMLInputElement>("width");
 const widthValue = element("widthValue");
@@ -75,12 +80,19 @@ const passesInput = element<HTMLInputElement>("passes");
 const passesValue = element("passesValue");
 const passOpacityInput = element<HTMLInputElement>("passOpacity");
 const passOpacityValue = element("passOpacityValue");
+const featherInput = element<HTMLInputElement>("feather");
+const featherValue = element("featherValue");
+const featherNote = element("featherNote");
+const shaderOnly = element("shaderOnly");
+const strokesOnly = element("strokesOnly");
 const scatterInput = element<HTMLInputElement>("scatter");
 const scatterValue = element("scatterValue");
 const pencilNote = element("pencilNote");
 const revealAllButton = element<HTMLButtonElement>("revealAll");
 const clearButton = element<HTMLButtonElement>("clear");
 const resetButton = element<HTMLButtonElement>("reset");
+const eraseSceneButton = element<HTMLButtonElement>("eraseScene");
+const eraseRoomButton = element<HTMLButtonElement>("eraseRoom");
 const status = element("status");
 
 let chosenMapId: string | undefined;
@@ -92,8 +104,6 @@ let chosenMapId: string | undefined;
  * worst case is re-walking a map, proportionate — the thing being prevented is a misclick, not a
  * considered mistake.
  */
-let resetArmed = false;
-let disarmTimer: ReturnType<typeof setTimeout> | undefined;
 const DISARM_MS = 4000;
 
 function say(message: string): void {
@@ -192,6 +202,60 @@ function showPencilNote(
 }
 
 /**
+ * Say what the renderer choice actually changes, since the two look similar in a still.
+ *
+ * Worth a line rather than leaving it to be discovered: the shader route trades roughly a hundred
+ * scene items for three, and the Pencil controls below stop applying under it — passes exist
+ * because a `Path`'s style is per-item, which is precisely the constraint the shader removes. A
+ * control that silently stops doing anything is the sort of thing that reads as a bug.
+ */
+function showRendererNote(renderer: Renderer): void {
+  rendererNote.textContent =
+    renderer === "shader"
+      ? "Soft edges, drawn per pixel."
+      : "Hard-edged vector lines. Much cheaper to draw.";
+}
+
+/**
+ * Show only the controls the current renderer actually obeys.
+ *
+ * Edge is shader-only because a `Path`'s silhouette is hard whatever it is set to; the Pencil group
+ * is `Path`-only because passes exist to work around `PathStyle` being per-item, which is precisely
+ * the constraint the shader removes. Leaving both on screen would mean, on either setting, a slider
+ * that moves and changes nothing — and an inert control is read as a bug in the renderer rather than
+ * as a control that does not apply.
+ *
+ * Hidden, not disabled. A disabled row still occupies a short panel and still invites the question.
+ * The stored values survive either way, so switching back restores what was set.
+ */
+function showRelevantControls(renderer: Renderer): void {
+  shaderOnly.hidden = renderer !== "shader";
+  strokesOnly.hidden = renderer !== "strokes";
+}
+
+/** Feather is carried in hundredths of the stroke's half-width. */
+const featherFractionFor = (hundredths: number): number => hundredths / 100;
+const featherHundredthsFor = (fraction: number): number =>
+  Math.round(fraction * 100);
+
+/**
+ * Name the two ends, because neither is obvious from a percentage.
+ *
+ * Zero is worth calling out especially: it makes the shader renderer draw a hard edge, which is
+ * what "Lines" already does — so a GM who has slid it to zero and cannot see the difference is
+ * looking at the right answer, not a broken one.
+ */
+function showFeatherNote(fraction: number): void {
+  if (fraction === 0) {
+    featherNote.textContent = "Hard edge — the same silhouette as Lines.";
+  } else if (fraction >= 0.8) {
+    featherNote.textContent = "All fade, no solid core.";
+  } else {
+    featherNote.textContent = "";
+  }
+}
+
+/**
  * Coalesce the continuous controls into one write per pause.
  *
  * A colour picker and a slider both fire `input` on every pixel of travel, and Owlbear rate-limits
@@ -226,6 +290,13 @@ function queueAppearance(changes: Partial<Appearance>): void {
  */
 function showAppearance(appearance: Appearance): void {
   if (writeTimer !== undefined) return;
+  rendererInput.value = appearance.renderer;
+  showRendererNote(appearance.renderer);
+  showRelevantControls(appearance.renderer);
+  const feather = featherHundredthsFor(appearance.featherFraction);
+  featherInput.value = String(feather);
+  featherValue.textContent = `${feather}%`;
+  showFeatherNote(appearance.featherFraction);
   colorInput.value = appearance.strokeColor;
   const rank = rankFor(appearance.strokeWidthSquares);
   widthInput.value = String(rank);
@@ -347,11 +418,99 @@ function applyTheme(theme: {
   );
 }
 
-function disarmReset(): void {
-  resetArmed = false;
-  resetButton.textContent = "Reset explored area";
-  if (disarmTimer !== undefined) clearTimeout(disarmTimer);
-  disarmTimer = undefined;
+/**
+ * Wire the tab strip.
+ *
+ * Driven off `data-panel` and `[role="tab"]` rather than a hardcoded list, so adding a tab is a
+ * button and a panel in the HTML and nothing here.
+ *
+ * **The tab is not persisted, and that is a deliberate omission rather than an oversight.** The
+ * popover is torn down and rebuilt each time it opens, so remembering the choice needs somewhere
+ * durable — and both candidates are wrong for it. Room metadata would broadcast a GM's tab to every
+ * client and cost a networked write per click; `sessionStorage` is partitioned per top-level site by
+ * Firefox's Total Cookie Protection in this third-party iframe (see the environment notes) and can
+ * simply vanish. Opening on Setup every time is a small cost against either.
+ */
+function installTabs(): void {
+  const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+
+  const select = (chosen: HTMLButtonElement): void => {
+    for (const tab of tabs) {
+      const selected = tab === chosen;
+      tab.setAttribute("aria-selected", String(selected));
+      // Roving tabindex: a tablist is one stop in the tab order, and the arrow keys move within it.
+      // Without this every tab is its own stop, which is the wrong shape for a group of three.
+      tab.tabIndex = selected ? 0 : -1;
+      element(tab.dataset.panel!).hidden = !selected;
+    }
+  };
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", (event) => {
+      const step =
+        event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (step === 0) return;
+      event.preventDefault();
+      // Wraps, which is what a tablist is expected to do.
+      const next = tabs[(index + step + tabs.length) % tabs.length]!;
+      select(next);
+      next.focus();
+    });
+  });
+}
+
+/**
+ * Give a button a two-click confirmation: the first arms it, a second within `DISARM_MS` commits.
+ *
+ * Cheaper than a modal and proportionate for GM-only actions whose worst case is re-walking a map
+ * — the thing being prevented is a misclick, not a considered mistake. `OBR.modal` remains the
+ * honest answer if one of these ever grows teeth.
+ *
+ * **One armed button at a time, and that is the point of centralising this.** With three
+ * destructive buttons each holding private arm state, arming one and then clicking another would
+ * leave the first silently armed behind a label that had reverted — so a later stray click on it
+ * would fire immediately with no confirmation at all. Arming here disarms every other.
+ */
+interface Confirmable {
+  disarm(): void;
+}
+const confirmables: Confirmable[] = [];
+
+function installConfirm(
+  button: HTMLButtonElement,
+  idleLabel: string,
+  armedLabel: string,
+  warning: string,
+  commit: () => Promise<void>,
+): void {
+  let armed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const disarm = (): void => {
+    armed = false;
+    button.textContent = idleLabel;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  confirmables.push({ disarm });
+
+  button.addEventListener("click", () => {
+    if (!armed) {
+      for (const other of confirmables) other.disarm();
+      armed = true;
+      button.textContent = armedLabel;
+      timer = setTimeout(disarm, DISARM_MS);
+      say(warning);
+      return;
+    }
+
+    disarm();
+    void commit().catch((error) => {
+      devLog("error", `panel: ${idleLabel} failed`, error);
+      say("That did not work — see the log.");
+    });
+  });
 }
 
 async function start(): Promise<void> {
@@ -364,6 +523,7 @@ async function start(): Promise<void> {
     return;
   }
   gmOnly.hidden = false;
+  installTabs();
 
   await OBR.theme.getTheme().then(applyTheme).catch(() => {});
   OBR.theme.onChange(applyTheme);
@@ -406,6 +566,25 @@ async function start(): Promise<void> {
     setTimeout(() => {
       wobbleNote.hidden = true;
     }, 1600);
+  });
+
+  featherInput.addEventListener("input", () => {
+    const fraction = featherFractionFor(Number(featherInput.value));
+    featherValue.textContent = `${featherHundredthsFor(fraction)}%`;
+    showFeatherNote(fraction);
+    // A uniform on effects that get rebuilt anyway, so a redraw — not in `invalidatesTrace`.
+    queueAppearance({ featherFraction: fraction });
+  });
+
+  rendererInput.addEventListener("change", () => {
+    const renderer = rendererInput.value as Renderer;
+    showRendererNote(renderer);
+    showRelevantControls(renderer);
+    // `change`, not `input`, and no debounce needed — a select fires once when the choice settles
+    // rather than continuously, so this cannot meet the rate limiter the sliders have to dodge.
+    // A redraw only: both renderers consume the same wobbled geometry, which is what makes them
+    // comparable. See `invalidatesTrace`, which deliberately excludes this.
+    queueAppearance({ renderer });
   });
 
   passesInput.addEventListener("input", () => {
@@ -497,30 +676,56 @@ async function start(): Promise<void> {
     })();
   });
 
-  resetButton.addEventListener("click", () => {
-    if (!resetArmed) {
-      resetArmed = true;
-      resetButton.textContent = "Reset explored area — click again";
-      disarmTimer = setTimeout(disarmReset, DISARM_MS);
-      say("This cannot be undone.");
-      return;
-    }
+  installConfirm(
+    resetButton,
+    "Reset explored area",
+    "Reset explored area — click again",
+    "This cannot be undone.",
+    async () => {
+      // A plain metadata write. Every client's tracker — including this GM's own background
+      // page — reacts through `onRegionChange`, which clears its local mask and redraws. The
+      // tracker also cancels any pending region write when it sees this, so a token settling
+      // mid-reset cannot write the old region straight back.
+      await clearRegion();
+      say("Explored area reset.");
+    },
+  );
 
-    disarmReset();
-    void (async () => {
-      try {
-        // A plain metadata write. Every client's tracker — including this GM's own background
-        // page — reacts through `onRegionChange`, which clears its local mask and redraws. The
-        // tracker also cancels any pending region write when it sees this, so a token settling
-        // mid-reset cannot write the old region straight back.
-        await clearRegion();
-        say("Explored area reset.");
-      } catch (error) {
-        devLog("error", "panel: could not reset the explored area", error);
-        say("Could not reset the explored area.");
-      }
-    })();
-  });
+  installConfirm(
+    eraseSceneButton,
+    "Erase this scene's data",
+    "Erase scene data — click again",
+    "Erases the region, the map choice and the off switch.",
+    async () => {
+      // Both writes go through the ordinary paths so the tracker's existing subscriptions do the
+      // work — `clearRegion` in particular cancels any pending debounced region write, which is
+      // the race that would otherwise put the region straight back a moment later.
+      //
+      // Region first. Erasing the settings re-enables tracing on a one-map scene, and doing that
+      // while the old region is still stored would briefly redraw the whole remembered sketch
+      // before wiping it.
+      await clearRegion();
+      await eraseSketchSettings();
+      await refreshMaps();
+      // Says the map re-traces, because otherwise the next thing that happens looks like the erase
+      // failed: the region is empty, so the sketch redraws from scratch as ground is re-explored,
+      // and a GM watching lines return has no way to tell a fresh trace from the old one surviving.
+      say("Scene data erased. The map re-traces, and sketches again as you explore.");
+    },
+  );
+
+  installConfirm(
+    eraseRoomButton,
+    "Erase appearance settings",
+    "Erase appearance — click again",
+    "Room-wide: affects every scene in this room.",
+    async () => {
+      await eraseAppearance();
+      // The store's own change subscription repaints the controls on every client, this one
+      // included, so there is nothing to update by hand here.
+      say("Appearance reset to defaults for the whole room.");
+    },
+  );
 }
 
 OBR.onReady(() => {

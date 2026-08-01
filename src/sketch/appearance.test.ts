@@ -41,6 +41,8 @@ describe("fromRoomMetadata", () => {
           pencilPasses: 3,
           pencilOpacity: 0.5,
           pencilScatterSquares: 0.03,
+          renderer: "shader",
+          featherFraction: 0.4,
         }),
       ),
     ).toEqual({
@@ -51,6 +53,8 @@ describe("fromRoomMetadata", () => {
       pencilPasses: 3,
       pencilOpacity: 0.5,
       pencilScatterSquares: 0.03,
+      renderer: "shader",
+      featherFraction: 0.4,
     });
   });
 
@@ -186,6 +190,75 @@ describe("wobble", () => {
       fromRoomMetadata(wrap({ wobbleWavelengthSquares: -5 }))
         .wobbleWavelengthSquares,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("renderer", () => {
+  it("defaults to the shader renderer", () => {
+    // Judged in a room and preferred, 2026-08-01. Deliberately reaches existing rooms: a stored
+    // appearance predating this field has no value for it, so the per-field fallback applies and
+    // the room moves to soft edges on reload.
+    expect(DEFAULT_APPEARANCE.renderer).toBe("shader");
+    expect(fromRoomMetadata({}).renderer).toBe("shader");
+    expect(
+      fromRoomMetadata(wrap({ strokeColor: "#123abc" })).renderer,
+    ).toBe("shader");
+  });
+
+  it("keeps an explicit choice of the Path renderer", () => {
+    // The escape hatch the default change relies on. A GM who prefers hard edges picks Lines, and
+    // that has to survive — otherwise the default is not a default, it is a removal.
+    expect(fromRoomMetadata(wrap({ renderer: "strokes" })).renderer).toBe("strokes");
+  });
+
+  it("falls back on a name it does not know", () => {
+    // The skew case: a room whose GM picked a renderer a later build adds, read by a client running
+    // the older build. Rendering the look it does understand beats rendering nothing.
+    expect(fromRoomMetadata(wrap({ renderer: "holographic" })).renderer).toBe("shader");
+    expect(fromRoomMetadata(wrap({ renderer: 7 })).renderer).toBe("shader");
+    expect(fromRoomMetadata(wrap({ renderer: null })).renderer).toBe("shader");
+  });
+
+  it("is a redraw, not a re-trace", () => {
+    // The property that makes the two renderers comparable at all: they consume identical wobbled
+    // geometry, so switching may not cost a few hundred milliseconds of tracing. If this ever flips
+    // to true, the switch stops being a fair A/B and starts being a rebuild.
+    // Switching *away* from the default, so this keeps testing a real change rather than silently
+    // comparing the default against itself — which is what it started doing when the default moved.
+    const before = DEFAULT_APPEARANCE;
+    const after = { ...DEFAULT_APPEARANCE, renderer: "strokes" as const };
+
+    expect(before.renderer).not.toBe(after.renderer);
+    expect(invalidatesTrace(before, after)).toBe(false);
+    // But it must still be *noticed*, or moving the control would do nothing at all.
+    expect(differs(before, after)).toBe(true);
+  });
+});
+
+describe("featherFraction", () => {
+  it("clamps into range and falls back on nonsense", () => {
+    expect(fromRoomMetadata(wrap({ featherFraction: 5 })).featherFraction).toBe(1);
+    expect(fromRoomMetadata(wrap({ featherFraction: -2 })).featherFraction).toBe(0);
+    expect(fromRoomMetadata(wrap({ featherFraction: "soft" })).featherFraction).toBe(
+      DEFAULT_APPEARANCE.featherFraction,
+    );
+  });
+
+  it("keeps zero rather than treating it as unset", () => {
+    // Zero is a real setting — a hard edge, the same silhouette Lines gives — so a falsy check here
+    // would silently spring it back to the default and the control would appear to have a floor.
+    expect(fromRoomMetadata(wrap({ featherFraction: 0 })).featherFraction).toBe(0);
+  });
+
+  it("is a redraw, not a re-trace", () => {
+    // It travels as a uniform on effects rebuilt every redraw anyway. Were it in `invalidatesTrace`
+    // every nudge of the slider would re-trace the map — a few hundred milliseconds per pixel of
+    // travel, on the one control most likely to be dragged back and forth while tuning by eye.
+    const before = DEFAULT_APPEARANCE;
+    const after = { ...DEFAULT_APPEARANCE, featherFraction: 0.6 };
+
+    expect(invalidatesTrace(before, after)).toBe(false);
+    expect(differs(before, after)).toBe(true);
   });
 });
 

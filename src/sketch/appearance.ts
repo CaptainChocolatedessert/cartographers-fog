@@ -96,15 +96,49 @@ export interface Appearance {
    * only darken the line; the fraying is entirely a product of them landing in different places.
    */
   readonly pencilScatterSquares: number;
+  /**
+   * Which renderer draws the strokes. **`"shader"` is the default as of 2026-08-01.**
+   *
+   * `"shader"` emits `Effect` items that draw the marks from geometry passed as uniforms, which buys
+   * a genuinely soft edge — something a `Path` cannot have at any setting. `"strokes"` emits `Path`
+   * items and is what shipped before; it is kept because it is far cheaper to render (a handful of
+   * items against a couple of hundred effects) and remains the fallback if the shader route ever
+   * misbehaves on a scene.
+   *
+   * Both have now been judged in a room, which is what moved the default. Note this is in `differs`
+   * but **not** in `invalidatesTrace`: both consume the identical wobbled geometry, so switching is
+   * a redraw. That is deliberate, and it is what makes the two directly comparable.
+   */
+  readonly renderer: Renderer;
+  /**
+   * How far the ink fades out at a stroke's edge, as a fraction of its half-width. **Shader
+   * renderer only** — a `Path` has a hard silhouette at every setting, which is the whole reason
+   * the shader renderer exists.
+   *
+   * Zero is a hard edge, and reproduces what a `Path` looks like. At one the ramp runs from the
+   * centreline out to twice the half-width, so the stroke has no solid core left and reads as a
+   * smudge. The useful range is well below that.
+   *
+   * A uniform, so this is a redraw — deliberately absent from `invalidatesTrace`. It is the one
+   * genuinely new control the shader route introduces, and the thing most worth tuning by eye.
+   */
+  readonly featherFraction: number;
 }
 
+export type Renderer = "strokes" | "shader";
+
+const RENDERERS: readonly Renderer[] = ["strokes", "shader"];
+
 /**
- * The values that shipped as constants in `strokes.ts` and `traceSettings.ts`, judged in a room
- * on 2026-07-28.
+ * The values judged in a room — ink and geometry on 2026-07-28, the renderer on 2026-08-01.
  *
- * These being the defaults is load-bearing, not tidiness: a room whose metadata has never been
- * written must render exactly as it did before this panel existed. Anyone changing them is
- * changing what every existing table sees on their next reload.
+ * **Changing anything here changes what every existing table sees on its next reload**, because
+ * `fromRoomMetadata` falls back per *field*: a room that has never been written takes all of these,
+ * and a room written before a field existed takes that field's default while keeping its own values
+ * for the rest. That per-field fallback is what makes a default change reach existing rooms at all,
+ * so it is never merely tidiness.
+ *
+ * The `renderer` default was moved deliberately on that basis — see its note below.
  */
 export const DEFAULT_APPEARANCE: Appearance = {
   strokeColor: "#603F21",
@@ -116,7 +150,27 @@ export const DEFAULT_APPEARANCE: Appearance = {
   pencilPasses: 1,
   pencilOpacity: 1,
   pencilScatterSquares: 0,
+  // The shader renderer, judged in a room 2026-08-01 and preferred (user's decision). This is a
+  // deliberate change to what existing rooms see: a room whose stored appearance predates the
+  // `renderer` field has no value for it, so the per-field fallback gives it this one and the room
+  // switches to soft edges on its next reload. That is the intent, not a side effect — a room that
+  // wants the old look can pick Lines in the panel, and the choice then persists.
+  renderer: "shader",
+  // A third of the half-width — the value the shader probe was judged at by eye, not a measured
+  // optimum. It has no effect under the default `strokes` renderer, so it changes nothing for an
+  // existing table.
+  featherFraction: 1 / 3,
 };
+
+/**
+ * Feather ceiling.
+ *
+ * One means the fade begins at the centreline and ends at twice the half-width, so nothing of the
+ * stroke is at full strength anywhere. That is past useful rather than at the edge of it — but it
+ * is the point where the control stops meaning anything, which is the right place for a ceiling,
+ * and the alternative is guessing where "too soft" is before anyone has looked at it.
+ */
+export const MAX_FEATHER_FRACTION = 1;
 
 /**
  * Width bounds, in grid squares.
@@ -226,7 +280,27 @@ export function fromRoomMetadata(
       MAX_PENCIL_SCATTER_SQUARES,
       DEFAULT_APPEARANCE.pencilScatterSquares,
     ),
+    renderer: readRenderer(stored.renderer),
+    featherFraction: readClamped(
+      stored.featherFraction,
+      0,
+      MAX_FEATHER_FRACTION,
+      DEFAULT_APPEARANCE.featherFraction,
+    ),
   };
+}
+
+/**
+ * An unknown renderer name falls back rather than being trusted.
+ *
+ * The skew case this guards is real: a room whose GM has selected a renderer a later build adds,
+ * read by a client running the older build. Rendering with the look it does understand beats
+ * rendering nothing, and matches how every other field here degrades.
+ */
+function readRenderer(value: unknown): Renderer {
+  return typeof value === "string" && (RENDERERS as readonly string[]).includes(value)
+    ? (value as Renderer)
+    : DEFAULT_APPEARANCE.renderer;
 }
 
 /** Clamp a finite number into a range, or fall back. The shape most of these fields want. */
@@ -306,6 +380,12 @@ export function differs(before: Appearance, after: Appearance): boolean {
     before.wobbleWavelengthSquares !== after.wobbleWavelengthSquares ||
     before.pencilPasses !== after.pencilPasses ||
     before.pencilOpacity !== after.pencilOpacity ||
-    before.pencilScatterSquares !== after.pencilScatterSquares
+    before.pencilScatterSquares !== after.pencilScatterSquares ||
+    // In `differs` but pointedly not in `invalidatesTrace` — both renderers consume the same
+    // wobbled geometry, so switching costs a redraw and nothing more.
+    before.renderer !== after.renderer ||
+    // Also a redraw, and for the same kind of reason: it travels as a uniform on effects that are
+    // rebuilt anyway, so it never touches the trace.
+    before.featherFraction !== after.featherFraction
   );
 }

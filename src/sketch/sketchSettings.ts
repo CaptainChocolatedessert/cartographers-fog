@@ -78,6 +78,23 @@ export async function clearSketch(): Promise<void> {
   });
 }
 
+/**
+ * Remove both keys entirely, as though this extension had never touched the scene.
+ *
+ * **Not the same as `clearSketch`, and the difference is the whole reason this exists.** That
+ * writes an explicit `sketch-enabled: false`, because suppression is a decision that has to be
+ * stored — an absent choice falls back to "trace the only map there is". Here the intent is the
+ * opposite: leave *nothing* behind, and let the fallback rule apply exactly as it would in a scene
+ * this extension had never seen. On a one-map scene that means the sketch comes straight back,
+ * which is what a clean slate should look like.
+ */
+export async function eraseSketchSettings(): Promise<void> {
+  await OBR.scene.setMetadata({
+    [MAP_CHOICE_KEY]: undefined,
+    [SKETCH_ENABLED_KEY]: undefined,
+  });
+}
+
 export function onSketchSettingsChange(
   callback: (settings: SketchSettings) => void,
 ): () => void {
