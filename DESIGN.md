@@ -659,6 +659,26 @@ Cost is linear in passes: four passes is four times the path commands and four t
 against ~19k points and a handful of items today. That is what sets the ceiling at four — beyond
 three or four, additional passes fall on ground already covered.
 
+##### Judged in a room (2026-08-01): the ranges are right, the effect is not
+
+The user tried it against a real map. The controls behave and the ranges are appropriate — "it can
+get something pretty good" — but **the overlapping strokes themselves do not look good**, and the
+verdict was "might be better than nothing". Likely to stay off.
+
+Worth understanding why, because it is structural rather than a tuning failure. **Real graphite
+varies *within* a stroke** — the tooth of the paper takes ink unevenly along a single mark. Multiple
+offset copies vary *between* strokes instead, which reads as gestural underdrawing: the look of a
+sketch still being worked out, not of a finished line drawn in pencil. That is a legitimate
+aesthetic and quite wrong for a map meant to look like a careful record.
+
+So this joins the dash and the wash: built, judged, kept, and left off by default. Nothing needs
+removing — `pencilPasses: 1` is the default, so the shipped look is unaffected and the controls are
+there for anyone who wants that style.
+
+**It also sharpens the case for the SDF renderer below.** The thing multi-pass cannot do is exactly
+the thing a shader can: vary the ink *along and across a single stroke*. If within-stroke texture is
+what actually reads as pencil, that is the only route to it that this SDK allows.
+
 ##### What the map picker fixes
 
 Listing every MAP-layer image with its size, lock state and visibility, and letting the GM pick, is
