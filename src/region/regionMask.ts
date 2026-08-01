@@ -37,6 +37,21 @@ export function cloneMask(mask: RegionMask): RegionMask {
   return { grid: mask.grid, cells: new Uint8Array(mask.cells) };
 }
 
+/**
+ * Every cell discovered — the whole map remembered at once.
+ *
+ * Exists for judging the sketch rather than for play: a trace can only be assessed where the party
+ * has walked, so tuning the look otherwise means exploring a map first, and any part never walked
+ * is never seen. This is the inverse of the reset, and equally recoverable by it.
+ *
+ * The grid spans the MAP-layer images' bounds, so "everything" means the map's own extent — not
+ * some larger arbitrary area. It encodes to almost nothing: DESIGN.md measured encoded size
+ * scaling with the region's *perimeter*, and a solid rectangle is the cheapest shape there is.
+ */
+export function fillMask(grid: CellGrid): RegionMask {
+  return { grid, cells: new Uint8Array(cellCount(grid)).fill(1) };
+}
+
 export function isSet(mask: RegionMask, column: number, row: number): boolean {
   if (!isInside(mask.grid, column, row)) return false;
   return mask.cells[cellIndex(mask.grid, column, row)] === 1;

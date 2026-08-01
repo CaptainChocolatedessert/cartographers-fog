@@ -5,6 +5,7 @@ import {
   containsPoint,
   countSet,
   createMask,
+  fillMask,
   isSet,
   rasterizePolygon,
   setCell,
@@ -42,6 +43,25 @@ function rect(x0: number, y0: number, x1: number, y1: number): Vector2[] {
 describe("basic cell operations", () => {
   it("starts empty", () => {
     expect(countSet(createMask(grid()))).toBe(0);
+  });
+
+  it("fills every cell, corners included", () => {
+    const filled = fillMask(grid());
+    // 20x12 at this fixture's cell size. Counting rather than trusting the length guards against
+    // a fill that covers the buffer but not the addressable grid, which `isSet` would still
+    // report as false at the far corner.
+    expect(countSet(filled)).toBe(20 * 12);
+    expect(isSet(filled, 0, 0)).toBe(true);
+    expect(isSet(filled, 19, 11)).toBe(true);
+    // Still bounded — a filled mask must not claim ground off the map.
+    expect(isSet(filled, 20, 11)).toBe(false);
+    expect(containsPoint(filled, { x: 1200, y: 300 })).toBe(false);
+  });
+
+  it("fills a mask that round-trips through the run encoding as one run per row", () => {
+    // The cheap-storage claim in `fillMask`'s comment, asserted rather than assumed: encoded size
+    // scales with the region's perimeter, so a solid rectangle is the best case.
+    expect(toRuns(fillMask(grid())).length).toBe(12);
   });
 
   it("sets and reads cells", () => {

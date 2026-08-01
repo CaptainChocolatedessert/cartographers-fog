@@ -22,6 +22,7 @@ import OBR, {
 } from "@owlbear-rodeo/sdk";
 
 import { chunkSegments } from "../trace/strokeChunks";
+import type { Appearance } from "./appearance";
 import type { TracedSegment } from "../trace/chop";
 import type { Vector2 } from "../geometry/vector";
 
@@ -43,22 +44,15 @@ const SKETCH_KEY = `${NAMESPACE}/sketch-strokes`;
 const SKETCH_LAYER = "CONTROL" as const;
 
 /**
- * Sepia ink, chosen against a real map by the author (2026-07-28).
+ * Colour and width now come from the GM's settings — see `appearance.ts`, whose defaults are the
+ * values judged in a room on 2026-07-28 (sepia `#603F21`, 1/12 of a grid square).
  *
- * The landing page's palette is the reference for the project's look — parchment `#f4ecd8`,
- * ink `#4a3728`, pale sepia `#d9c7a7` — but the right value depends on the fog it is drawn
- * over, so this was picked by eye in a room rather than taken from the sheet. One constant if
- * it wants revisiting.
- */
-const STROKE_COLOR = "#603F21";
-
-/**
- * Stroke width as a fraction of a grid square, so it reads the same on any scene's scale.
- *
- * Judged in a room at 1/12 (2026-07-28), up from 1/30 — thin strokes read as a technical
+ * They were constants here until the settings panel existed. Worth knowing why the defaults are
+ * where they are: the sepia was picked by eye against the fog it is drawn over rather than taken
+ * from the landing page's palette, because what matters is the contrast with the darkness, not
+ * agreement with a sheet. And 1/12 is up from an earlier 1/30 — thin strokes read as a technical
  * drawing rather than a pen.
  */
-const STROKE_WIDTH_SQUARES = 1 / 12;
 
 /**
  * Dash and gap as fractions of a grid square. **Off**, judged in a room 2026-07-28.
@@ -80,15 +74,36 @@ const GAP_SQUARES = 0.035;
  *
  * @returns how many items were drawn.
  */
+/**
+ * @param passes one entry per pencil pass, each holding the *same* strokes along a slightly
+ * different path — see `pencil.ts`. A single entry is the ordinary un-textured sketch.
+ */
 export async function renderStrokes(
-  segments: readonly TracedSegment[],
+  passes: readonly (readonly TracedSegment[])[],
   dpi: number,
+  appearance: Appearance,
 ): Promise<number> {
-  const chunks = chunkSegments(segments);
-  const strokeWidth = Math.max(1, dpi * STROKE_WIDTH_SQUARES);
+  const strokeWidth = Math.max(1, dpi * appearance.strokeWidthSquares);
   const dash =
     DASH_SQUARES > 0 ? [dpi * DASH_SQUARES, dpi * GAP_SQUARES] : [];
-  const items = chunks.map((chunk) => toStrokeItem(chunk, strokeWidth, dash));
+
+  // Each pass becomes its own items. It has to: `strokeOpacity` is per-item, so overlapping
+  // faint copies is only expressible as separate items — which is the whole reason the texture
+  // is built from passes rather than from varying one stroke's style along its length.
+  const items: Item[] = [];
+  for (const pass of passes) {
+    for (const chunk of chunkSegments(pass)) {
+      items.push(
+        toStrokeItem(
+          chunk,
+          strokeWidth,
+          dash,
+          appearance.strokeColor,
+          appearance.pencilOpacity,
+        ),
+      );
+    }
+  }
 
   await clearStrokes();
   if (items.length > 0) await OBR.scene.local.addItems(items);
@@ -109,6 +124,8 @@ function toStrokeItem(
   segments: readonly TracedSegment[],
   strokeWidth: number,
   dash: readonly number[],
+  strokeColor: string,
+  strokeOpacity: number,
 ): Item {
   const commands: PathCommand[] = [];
   for (const segment of segments) appendStroke(commands, segment.points);
@@ -118,8 +135,8 @@ function toStrokeItem(
       .commands(commands)
       // Points are already world-space, so the item itself sits at the origin.
       .position({ x: 0, y: 0 })
-      .strokeColor(STROKE_COLOR)
-      .strokeOpacity(1)
+      .strokeColor(strokeColor)
+      .strokeOpacity(strokeOpacity)
       .strokeWidth(strokeWidth)
       .strokeDash([...dash])
       // Open polylines, so any fill would flood the area they enclose rather than tint a line.

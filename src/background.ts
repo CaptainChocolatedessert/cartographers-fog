@@ -62,6 +62,14 @@ OBR.onReady(async () => {
   // extra bounds round trips per light every 100ms, competing with the region tracker's poll for
   // exactly the resource that now limits sampling density. Re-install it to re-measure.
 
+  // The render probes (`./debug/blendProbe`, `./debug/dataUrlProbe`) are deliberately NOT
+  // installed, and retired for the same reason as the two below: they answered their questions and
+  // then drew bars, cyan patches and swatch boxes over the map on every scene open. All three
+  // findings are in DESIGN.md — `data:` URLs do not render, an attached effect clips to its
+  // parent's fill and needs no visible fill, and a `STANDALONE` effect can draw a stroke outright
+  // from geometry passed as uniforms, stably in world space. Re-install to re-measure; the cells
+  // are cheap to extend, which is how the last one got to ten.
+
   // The storage probe (`./debug/storageProbe`) is deliberately NOT called any more. Its three
   // questions are answered and the numbers are recorded in DESIGN.md, "Storage limits". Leaving
   // it running costs on every load: it writes megabytes, floods the shared dev log with hundreds
@@ -76,3 +84,4 @@ async function runProbe(): Promise<void> {
     devLog("error", "CORS probe threw", error);
   }
 }
+

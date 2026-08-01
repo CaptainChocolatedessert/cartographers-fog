@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cartographer's Fog</title>
+    <style>
+      /*
+       * Colours come from Owlbear's own theme at runtime (see panel.ts) rather than from the
+       * landing page's parchment palette. A panel is chrome: it sits inside the app's UI and
+       * should follow the app's light/dark, where the *sketch* is content and keeps its sepia.
+       * These values are the fallback for the moment before the theme arrives.
+       */
+      :root {
+        --bg: #222639;
+        --text: #fff;
+        --dim: #ffffffb3;
+        --line: #ffffff1f;
+        --accent: #bb99ff;
+        --danger: #ff8a80;
+      }
+
+      body {
+        margin: 0;
+        padding: 12px;
+        font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      h2 {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--dim);
+        margin: 18px 0 8px;
+      }
+      h2:first-of-type {
+        margin-top: 0;
+      }
+
+      p {
+        margin: 6px 0;
+        color: var(--dim);
+      }
+
+      .hint {
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      button {
+        font: inherit;
+        color: inherit;
+        background: #ffffff14;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 10px;
+        cursor: pointer;
+        width: 100%;
+        text-align: left;
+      }
+      button:hover:not(:disabled) {
+        background: #ffffff24;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.danger {
+        color: var(--danger);
+      }
+      button.chosen {
+        border-color: var(--accent);
+        background: #ffffff1f;
+      }
+
+      .maps {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .map-name {
+        display: block;
+      }
+      .map-detail {
+        display: block;
+        font-size: 11px;
+        color: var(--dim);
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 10px 0;
+      }
+      .row label {
+        flex: 1;
+        color: var(--dim);
+      }
+      .row output {
+        min-width: 3.2em;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+      }
+
+      input[type="range"] {
+        flex: 1.4;
+        accent-color: var(--accent);
+        min-width: 0;
+      }
+      input[type="color"] {
+        width: 42px;
+        height: 26px;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: none;
+        cursor: pointer;
+      }
+      input[type="checkbox"] {
+        accent-color: var(--accent);
+        width: 16px;
+        height: 16px;
+      }
+
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      hr {
+        border: none;
+        border-top: 1px solid var(--line);
+        margin: 16px 0 0;
+      }
+
+      #status {
+        min-height: 1.45em;
+        font-size: 11px;
+        color: var(--dim);
+        margin-top: 10px;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Hidden until the role is known. A player must never see the GM's controls flash up before
+      being told they are not for them.
+    -->
+    <div id="gmOnly" hidden>
+      <h2>Map to sketch</h2>
+      <div class="maps" id="maps"></div>
+      <p id="mapsEmpty" hidden>No MAP-layer image in this scene.</p>
+
+      <h2>Appearance</h2>
+      <div class="row">
+        <label for="color">Ink</label>
+        <input type="color" id="color" value="#603F21" />
+      </div>
+      <div class="row">
+        <label for="width">Stroke</label>
+        <!--
+          The slider runs thin -> thick left to right, which is the direction a slider implies.
+          The underlying value is a *denominator* (1/12 of a grid square), where bigger means
+          finer — so panel.ts flips between the two rather than leaving the control reversed.
+        -->
+        <input type="range" id="width" min="4" max="60" step="1" value="52" />
+        <output id="widthValue">1/12</output>
+      </div>
+      <div class="row">
+        <label for="wobble">Wobble</label>
+        <!--
+          0 is off, and the top of the range is a quarter of a grid square — a long way past a
+          shaky hand. Value is in half-hundredths of a square (amplitude = value / 200) so the
+          low end, where the useful settings probably are, still has fine steps.
+        -->
+        <input type="range" id="wobble" min="0" max="50" step="1" value="4" />
+        <output id="wobbleValue">2.0%</output>
+      </div>
+      <div class="row">
+        <label for="period">Period</label>
+        <!--
+          Hundredths of a grid square. Short is a tremor, long is a slow bow. The subdivision
+          step follows this, so a short period costs more points — see traceSettings.ts.
+        -->
+        <input type="range" id="period" min="10" max="150" step="5" value="35" />
+        <output id="periodValue">0.35</output>
+      </div>
+      <p id="wobbleNote" hidden>Re-tracing the map…</p>
+
+      <h2>Pencil</h2>
+      <p class="hint">
+        Each stroke drawn several times, faintly, along slightly different paths. One pass is
+        off.
+      </p>
+      <div class="row">
+        <label for="passes">Passes</label>
+        <input type="range" id="passes" min="1" max="4" step="1" value="1" />
+        <output id="passesValue">1</output>
+      </div>
+      <div class="row">
+        <label for="passOpacity">Pass opacity</label>
+        <input
+          type="range"
+          id="passOpacity"
+          min="15"
+          max="100"
+          step="5"
+          value="100"
+        />
+        <output id="passOpacityValue">100%</output>
+      </div>
+      <div class="row">
+        <label for="scatter">Scatter</label>
+        <!-- Thousandths of a grid square: the useful range is a fraction of the stroke width. -->
+        <input type="range" id="scatter" min="0" max="80" step="2" value="0" />
+        <output id="scatterValue">off</output>
+      </div>
+      <p id="pencilNote" class="hint"></p>
+
+      <hr />
+      <h2>Explored area</h2>
+      <div class="actions">
+        <button id="revealAll">Mark whole map explored</button>
+        <button id="clear">Clear sketch</button>
+        <button id="reset" class="danger">Reset explored area</button>
+      </div>
+
+      <p id="status"></p>
+    </div>
+
+    <p id="playerOnly" hidden>
+      Cartographer's Fog is running. Its settings are the GM's to change.
+    </p>
+
+    <script type="module" src="/src/panel.ts"></script>
+  </body>
+</html>

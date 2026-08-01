@@ -134,6 +134,69 @@ export async function resolveSketchMap(): Promise<ImageItem | null> {
   return null;
 }
 
+/** A MAP-layer image as the settings panel needs to show it. */
+export interface MapImageSummary {
+  readonly id: string;
+  readonly name: string;
+  /** World-space size, rounded — what distinguishes a real map from a token on the wrong layer. */
+  readonly width: number;
+  readonly height: number;
+  readonly locked: boolean;
+  readonly visible: boolean;
+  /** Whether the area filter would keep this as a plausible map. */
+  readonly plausible: boolean;
+}
+
+/**
+ * Every MAP-layer image in the scene, for the panel to offer as a choice.
+ *
+ * Deliberately *not* the same thing as `resolveSketchMap`, and the difference is the point of the
+ * panel. The resolver refuses when the scene is ambiguous, because guessing risks tracing a GM
+ * overlay onto a player's screen. This lists everything and lets the GM decide — which is safe
+ * precisely because a human is reading the names.
+ *
+ * `locked` is reported but no longer *blocks* anything, which is the hole this closes: the context
+ * menu needs an item selected, and a scene map is normally locked and so cannot be clicked. That
+ * made the nomination unreachable in exactly the scene that needed it. A panel needs no selection.
+ *
+ * `plausible` carries the area filter's verdict as information rather than as a rule — a stray
+ * token on the MAP layer is shown, marked, and still choosable, since the filter is a heuristic and
+ * the GM is not.
+ */
+export async function listMapImages(): Promise<MapImageSummary[]> {
+  const maps = await OBR.scene.items.getItems<ImageItem>(
+    (item) => isImage(item) && item.layer === "MAP",
+  );
+  if (maps.length === 0) return [];
+
+  const measured = await Promise.all(
+    maps.map(async (map) => ({
+      map,
+      bounds: await OBR.scene.items.getItemBounds([map.id]),
+    })),
+  );
+
+  const kept = selectMapCandidates(
+    measured.map(({ map, bounds }) => ({
+      id: map.id,
+      name: map.name || "unnamed",
+      area: Math.max(0, bounds.width) * Math.max(0, bounds.height),
+    })),
+  );
+
+  return measured
+    .map(({ map, bounds }) => ({
+      id: map.id,
+      name: map.name || "unnamed",
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+      locked: map.locked,
+      visible: map.visible,
+      plausible: kept.some((candidate) => candidate.id === map.id),
+    }))
+    .sort((a, b) => b.width * b.height - a.width * a.height);
+}
+
 /** Areas of what was kept and dropped, so a surprising exclusion can be checked. */
 function describe(
   measured: readonly { map: ImageItem; bounds: { width: number; height: number } }[],

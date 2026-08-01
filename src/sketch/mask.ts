@@ -26,6 +26,15 @@ import type { Vector2 } from "../geometry/vector";
 export interface SketchSelection {
   readonly segments: TracedSegment[];
   /**
+   * Which input segments these were, in the same order.
+   *
+   * The pencil texture draws several displaced copies of every stroke (`pencil.ts`), and those
+   * copies must be selected by index from one masking decision rather than each being masked on
+   * its own midpoint. Masking them independently would let passes wink in and out separately at
+   * the region boundary, so the texture would shimmer as tokens moved.
+   */
+  readonly indices: number[];
+  /**
    * Drawn only because of the margin — they fail the plain midpoint test.
    *
    * This is the measurement that says whether the margin is doing anything. Near zero on a
@@ -65,10 +74,12 @@ export function selectSketchSegments(
   }
 
   const selected: TracedSegment[] = [];
+  const indices: number[] = [];
   let rescued = 0;
   let suppressed = 0;
 
-  for (const segment of segments) {
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index]!;
     const samples = samplePoints(segment, margin);
 
     let isDiscovered = false;
@@ -98,10 +109,11 @@ export function selectSketchSegments(
     }
 
     selected.push(segment);
+    indices.push(index);
     if (!plainly(segment, discovered, occluders)) rescued++;
   }
 
-  return { segments: selected, rescued, suppressed };
+  return { segments: selected, indices, rescued, suppressed };
 }
 
 /** What the midpoint alone would have decided — the baseline the counters measure against. */

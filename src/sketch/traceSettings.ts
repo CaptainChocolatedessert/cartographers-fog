@@ -75,20 +75,25 @@ const MAX_TURN_DEGREES = 40;
 // -------------------------------------------------------------------------------------
 
 /**
- * Wobble geometry, in grid squares.
+ * The subdivision step, as a fraction of the wobble's wavelength.
  *
- * Genuinely grid-relative, unlike the trace lengths above: these describe how a *hand* moves
- * across a map, and a grid square is the one unit that means the same thing on every scene.
- * A token is one square, so an amplitude of 0.02 is a fiftieth of that — the scale of a shaky
- * line, not a redrawn one.
+ * **Derived rather than constant, and that is deliberate.** Both were fixed constants — 0.06 and
+ * 0.35 squares — until the wavelength became a GM setting. Holding the step fixed while the period
+ * moved would have broken the wobble at the short end: `wobble.ts` layers a second octave at a
+ * third of the wavelength, so the finest feature at the default is 0.117 squares against a 0.06
+ * step. That is two samples per cycle — right on the sampling limit *already*. Any shorter period
+ * would have undersampled it, and an undersampled smooth field does not look like a smaller
+ * wobble, it looks like white noise, which is the exact failure `valueNoise`'s interpolation
+ * exists to avoid.
  *
- * All three are aesthetic and meant to be moved. Amplitude is how far the pen strays,
- * wavelength is how far it travels between strays, and step is how finely a straight run is
- * broken up before being bent — too coarse and long walls stay visibly ruled.
+ * The ratio is written as the two shipped constants rather than rounded, so the default wavelength
+ * reproduces the validated step of 0.06 exactly and this change is invisible at the setting that
+ * was judged in a room.
+ *
+ * Cost note: point count scales inversely with the step, and points are what the 8192-command item
+ * budget is spent on. `MIN_WOBBLE_WAVELENGTH_SQUARES` is where that is bounded.
  */
-const WOBBLE_AMPLITUDE_SQUARES = 0.02;
-const WOBBLE_WAVELENGTH_SQUARES = 0.35;
-const WOBBLE_STEP_SQUARES = 0.06;
+const WOBBLE_STEP_PER_WAVELENGTH = 0.06 / 0.35;
 
 /**
  * Fixed, and deliberately not derived from the map or the scene.
@@ -98,13 +103,31 @@ const WOBBLE_STEP_SQUARES = 0.06;
  */
 const WOBBLE_SEED = 0x5f3a91;
 
-/** Wobble options for a scene, from its grid size in world units. */
-export function wobbleOptionsFor(dpi: number): WobbleOptions {
+/**
+ * Wobble options for a scene, from its grid size in world units.
+ *
+ * An amplitude of zero is "off" all the way down rather than a separate path: `wobbleSegments`
+ * returns a segment untouched when the amplitude is not positive, so no displacement *and* no
+ * subdivision. The subdivision half matters — it exists only so a long straight run has somewhere
+ * to bend, and leaving it in with a zero offset would multiply the point count, and therefore the
+ * item count, for nothing visible.
+ *
+ * @param amplitudeSquares how far the pen strays, as a fraction of a grid square — the GM's
+ * setting, see `appearance.ts`.
+ * @param wavelengthSquares how far it travels between strays. The step follows it, so that the
+ * noise is sampled at the same density whatever the period.
+ */
+export function wobbleOptionsFor(
+  dpi: number,
+  amplitudeSquares: number,
+  wavelengthSquares: number,
+): WobbleOptions {
   const squares = dpi > 0 ? dpi : 150;
+  const wavelength = squares * Math.max(0, wavelengthSquares);
   return {
-    amplitude: squares * WOBBLE_AMPLITUDE_SQUARES,
-    wavelength: squares * WOBBLE_WAVELENGTH_SQUARES,
-    step: squares * WOBBLE_STEP_SQUARES,
+    amplitude: squares * Math.max(0, amplitudeSquares),
+    wavelength,
+    step: wavelength * WOBBLE_STEP_PER_WAVELENGTH,
     seed: WOBBLE_SEED,
   };
 }

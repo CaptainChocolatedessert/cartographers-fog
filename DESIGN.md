@@ -461,10 +461,216 @@ The recovery path runs through the map's own context menu, so the notification n
 matters more than usual: a locked map cannot be right-clicked, so a GM who clears the sketch on a
 scene with a locked map must unlock it to get the sketch back.
 
-**The reset is not confirmed**, because a confirmation needs `OBR.modal` or a context-menu
-`embed`, and both want an HTML page. `ContextMenuItem.embed` is the cheaper of the two — it
-renders inside the menu itself — and is the natural first step if a confirmation is wanted before
-the full settings panel exists.
+~~**The reset is not confirmed**, because a confirmation needs `OBR.modal` or a context-menu
+`embed`, and both want an HTML page.~~ **Superseded by the settings panel (2026-07-31)** — see
+"The settings panel" below. Inside a panel the confirmation is a two-step button, so neither
+`OBR.modal` nor a context-menu `embed` turned out to be needed. The three context-menu entries
+still ship alongside it.
+
+#### The settings panel — as built (2026-07-31), `panel.html` + `src/panel.ts`
+
+The first real UI, and the home for the two controls a context menu cannot host.
+
+**Surface.** A manifest `action`, which Owlbear renders as a button in the top left of a room and
+opens as an iframe. Note the manifest field is **`popover`**, not `popover_url` — the obvious guess
+by analogy with `background_url` is wrong, and a wrong manifest fails silently. `ActionApi` only
+*manipulates* an action that the manifest already declared (`setIcon`, `setWidth`, badge, open and
+close), which is what makes it clear the declaration has to be there. Distinct from
+`ToolApi.createTool`, which builds an entry in the drawing-tool column and is what this project's
+notes previously described.
+
+**Plain TypeScript, not React** (2026-07-31, deliberately). DESIGN.md's stated stack names React and
+this deviates: the panel is a handful of controls over shared metadata, the project already has a
+hand-written HTML + TS page in `trace.html` that works well, and adding React means three
+dependencies plus the lockfile regeneration ritual that CI has already caught once. Revisit if the
+panel becomes stateful enough to want it.
+
+##### The panel writes metadata and does nothing else
+
+The panel is a **separate iframe** from the background page and shares no module state with it —
+importing `tracker.ts` there would build a second, empty copy rather than reach the running one. So
+every control writes shared metadata, and the effect arrives back through subscriptions the
+background page already holds: `onSketchSettingsChange` for the map choice and the clear,
+`onRegionChange` for the reset, `onAppearanceChange` for the look.
+
+That is §5 working as designed rather than a workaround. Shared state is the interface, so a second
+surface costs no new plumbing and behaves identically on the GM's client and on every player's.
+
+**One race this exposed, now closed.** `clearDiscoveredRegion` cancels the tracker's pending region
+write before clearing; a panel calling `clearRegion` directly cannot. A reset arriving while a token
+was settling would therefore have been undone a moment later by the debounced write of the pre-reset
+mask — and would have looked like a reset that silently failed. The tracker's `onRegionChange`
+handler now cancels any pending write whenever it observes a clear, which covers both callers.
+
+##### Appearance settings — room metadata, and one asymmetry
+
+Colour, stroke width and wobble live in **room** metadata under a single key (`appearance.ts` /
+`appearanceStore.ts`), per "Display options are GM-controlled and ride shared metadata" above. The
+defaults are exactly the constants that shipped from step 6, which is load-bearing: a room whose
+metadata has never been written must render as it did before the panel existed.
+
+**The asymmetry that decides the wiring: colour and width are free, wobble is not.** Colour and
+width are `PathStyle` fields on items that already exist, so changing them is a redraw. Wobble is
+baked into the geometry at trace time — §6 requires the displacement to be a pure function of world
+position, computed once — so changing it means tracing the map again. `invalidatesTrace` carries the
+distinction, and a caller that collapses it gets one of two bugs: a full re-trace on every nudge of a
+colour picker, or a wobble toggle that appears dead until the scene reloads.
+
+##### Wobble is an amplitude, not a switch (2026-07-31)
+
+It shipped as a boolean and lasted about an hour. Toggling it made no perceptible difference (user),
+and the arithmetic says why: the amplitude judged in a room on 2026-07-28 is **0.02 of a grid square
+— three world units** on a 150-unit grid, against strokes 12.5 units wide. The line moved by less
+than its own width. That is the same three-unit figure that let wobble be ruled out as the cause of
+the off-centre strokes earlier the same day, which should have been the clue.
+
+**A switch between two states nobody can distinguish is not a control**, and the answer is a range
+rather than a better default: zero is off, and the ceiling is a quarter of a grid square (the user's
+choice). The stored field is therefore a magnitude, `wobbleSquares`, with the old boolean migrated —
+`false` to zero, `true` to the shipped amplitude — so a room that had deliberately turned wobble off
+does not silently turn it back on.
+
+Two things about the top of that range, worth knowing before treating it as a bug:
+
+- **At 0.25 the pen strays 37.5 world units, more than the ~30-unit width of the wall linework**, so
+  strokes visibly leave their walls — a larger displacement than the placement drift diagnosed and
+  fixed the same day. It is a different *kind* of error, which is why the ceiling is acceptable: the
+  placement bug was a systematic slide in one direction that grew down the map, where this is a
+  smooth field varying with position, so it reads as a hand rather than as misalignment.
+- **The wavelength is 0.35 squares**, so amplitudes approaching that stop reading as a wobble and
+  start rearranging the drawing. ~~If the settings that look good turn out to live up there, the
+  next thing to expose is the wavelength.~~ **Exposed the same day** — see below.
+
+The default is deliberately unchanged. If a value in the new range proves better by eye, that is a
+change to `DEFAULT_APPEARANCE`, and it changes what every existing table sees on its next reload.
+
+##### The period, and why the subdivision step had to follow it
+
+Amplitude is how far the line moves, period is how often — short is a tremor, long is a slow bow,
+and together they are most of what separates "shaky" from "drawn by hand". Range 0.1 to 1.5 grid
+squares, default the shipped 0.35.
+
+**Exposing it forced a constant to become derived, and that is the interesting part.** `wobble.ts`
+is two octaves: a slow bow at the wavelength and a finer tremor at a *third* of it. The subdivision
+step — how finely a straight run is cut up before being bent — was a fixed 0.06 squares. At the
+default wavelength the fine octave is 0.117 squares, so the step gives **two samples per fine
+cycle: exactly the sampling limit, already.** Holding it fixed while the period shortened would have
+undersampled the tremor, and an undersampled smooth field does not look like a smaller wobble — it
+looks like white noise, which is precisely the artifact `valueNoise`'s interpolation exists to
+prevent.
+
+So the step is now a fraction of the wavelength, written as `0.06 / 0.35` rather than a rounded
+figure, so the default reproduces the validated step exactly and the change is invisible at the
+setting that was judged in a room. A test pins that.
+
+**The cost is point count**, which is what the 8192-command item budget is spent on. Points scale
+inversely with the step, so at the 0.1-square floor the sketch carries ~3.5× the points it does at
+the default, and at 1.5 squares about a fifth. Measured against ~19k points and a handful of items,
+the floor is affordable; that is what sets it, not the aesthetics.
+
+One trap worth noting: a wavelength of zero makes `fbm` return zero and silently disables the
+wobble *however high the amplitude* — a control appearing dead because a different control is at its
+floor. The minimum is well above zero, and a test pins the consequence rather than only the bound.
+
+Three smaller things, each a real defect caught before it shipped:
+
+- **Continuous controls must debounce their writes.** A colour picker and a slider fire `input` on
+  every pixel of travel, and writes are rate-limited (`RateLimitHit`, see "Storage limits"). The
+  panel coalesces to one write per pause, the same reasoning as the region's debounce — avoiding an
+  enforced limiter, not politeness.
+- **Echoes must not fight the user's thumb.** `onAppearanceChange` also fires for the panel's own
+  writes, so adopting one mid-drag yanks the slider back. Updates from the store are ignored while a
+  write is queued.
+- **Stroke width is stored as a fraction but reasoned about as `1/N`,** and a larger `N` is a
+  *finer* line — so using the denominator as the slider's value makes dragging right thin the
+  stroke. The slider carries a thickness rank and the panel flips between the two scales.
+
+##### Mark whole map explored
+
+The inverse of the reset, and it exists for **judging the sketch rather than for play**. A trace can
+only be assessed where the party has walked, so tuning the look otherwise means exploring a map
+first, and anywhere never walked is never seen — which is a poor way to evaluate the one thing this
+project is actually about.
+
+Implemented as `fillMask` plus an ordinary `writeRegion`, so it travels the same path as a region
+the GM walked: every client's tracker unions it in through `onRegionChange`. It is cheap to store
+for the reason "Storage limits" gives — encoded size scales with the region's *perimeter*, and a
+solid rectangle is the best case there is.
+
+Two things it is not. It does not reveal Owlbear's fog, which this extension does not control (see
+"Rendering modes"), so the map itself stays hidden and only the sketch appears. And it does not show
+sketch where the party can *currently* see, because `sketch_region = discovered − currently_visible`
+still applies — on a scene with a token carrying a light, the area around it stays bare by design.
+
+The grid spans the MAP-layer images' bounds, so "the whole map" means the map's own extent. That is
+also the limit of what the region can ever record, which is worth remembering: anything outside the
+map image is never discovered, walked or not.
+
+##### Pencil texture — multiple faint passes (2026-08-01)
+
+A second route to "hand-drawn", alongside the wobble: draw each stroke several times, faintly, along
+slightly different paths. They cross and diverge, darkening where they coincide and fraying where
+they do not, which is what reads as graphite rather than ink.
+
+**Why not vary width or opacity along a stroke, which was the obvious idea.** `PathStyle` is per
+*item* — one `strokeWidth`, one `strokeOpacity` for a whole `Path` however many subpaths it holds,
+and there is no per-command styling. Varying either along a stroke therefore means cutting it into
+pieces and bucketing them by style, which quantises a continuous quantity; the user's judgment was
+that the eye would find the steps at every bucket boundary, and that is almost certainly right.
+Passes sidestep it: each pass is uniform, so it is expressible, and the variation comes from where
+the passes fall relative to one another rather than from any one of them changing.
+
+The other two options considered are recorded in case they are wanted:
+
+- **A nib** — width as a function of stroke direction — needs the geometry to carry the width, i.e.
+  emitting a filled *outline* rather than a stroked centerline. That is the only honest way to do it
+  and it is a bigger job. `fillRule: "nonzero"` would absorb the self-intersections that offsetting
+  a polyline produces on tight curves.
+- **An SkSL `Effect`** is a poor fit. It shades a rectangular region, not a stroke, so texturing only
+  our linework would mean sampling the rendered scene from `POST_PROCESS` — the approach already
+  rejected under "Rejected alternatives" for coupling to how the fog happens to look.
+
+**Three parameters, all in the panel:** passes (1–4, one is off), pass opacity, and scatter (0 is
+off). Defaults are one opaque pass with no scatter, so the shipped look is unchanged until a slider
+moves.
+
+Four things worth not re-deriving:
+
+- **A pass reuses `wobbleSegments`, and shares the wobble's wavelength and step.** Not laziness —
+  it inherits three properties that are awkward to get right: shared points stay shared (the vector
+  field argument in "The hand-drawn pass" applies unchanged, and a `chop.ts` cut would otherwise
+  open a gap in every pass), the texture is static rather than crawling (§6), and the noise stays
+  correctly sampled. That last one is the trap: a *finer* scatter period would need its own finer
+  subdivision step or it would alias into white noise, which is the exact artifact `valueNoise`'s
+  interpolation exists to prevent.
+- **Masking runs once, on the base segments, and every pass is selected by index.** Masking each
+  pass on its own midpoint would let them wink in and out independently at the region boundary, so
+  the texture would shimmer as tokens moved — precisely where the eye already is. Hence
+  `SketchSelection.indices`.
+- **Passes are built at trace time, not render time.** A pass is a displacement of the whole
+  polyline, the same cost as the wobble; doing it per redraw would pay it several times a second
+  during a drag.
+- **Opacity compounds, and the panel says so.** Three passes at 50% read as 87.5%, not 50%, so
+  raising the pass count darkens the sketch unless the per-pass opacity comes down. Without showing
+  the stacked figure the two controls look like they are fighting each other. `effectiveOpacity`
+  exists for that readout alone.
+
+Cost is linear in passes: four passes is four times the path commands and four times the items,
+against ~19k points and a handful of items today. That is what sets the ceiling at four — beyond
+three or four, additional passes fall on ground already covered.
+
+##### What the map picker fixes
+
+Listing every MAP-layer image with its size, lock state and visibility, and letting the GM pick, is
+what closes the hole recorded above: **a context menu needs an item selected, and a scene map is
+normally locked**, so the nomination was unreachable in exactly the scene that needed it. A panel
+needs no selection.
+
+`listMapImages` is deliberately *not* `resolveSketchMap`. The resolver refuses when a scene is
+ambiguous, because guessing risks tracing a GM overlay onto a player's screen; the panel shows
+everything and lets a human choose, which is safe precisely because a human is reading the names.
+The area filter's verdict is carried as a label ("too small to be a map?") rather than as a rule —
+it is a heuristic, and the GM is not.
 
 #### Trace resolution — a cap, not a target
 
@@ -807,11 +1013,11 @@ area, and a genuinely different feature from mode 1 rather than a fallback for i
 classic "explored areas stay visible" persistence, optionally recolored. Two implementations,
 with quite different risk:
 
-  - **Canvas composite → `Image` item.** Mask and recolor per pixel, giving a soft boundary and
-    true color transforms (desaturation, grain, paper texture). Costs an *encode* per update,
-    and depends on whether Owlbear renders an `Image` whose `url` is a `data:` URL — this is
-    **unverified**, and it gates the approach, since `buildImageUpload` into asset storage is
-    far too heavy for per-move updates. Ten-minute test; do it before committing.
+  - ~~**Canvas composite → `Image` item.**~~ **Dead as of 2026-08-01** — `data:` URLs do not
+    render, and the only remaining delivery mechanism is asset upload, which is far too heavy for
+    per-move updates. See "Raster rendering is not available". The rest of this section is kept
+    because the reasoning about masking granularity still applies to any future raster idea, but
+    nothing in it is currently buildable.
   - **CDN-cropped tiles.** Pre-slice the map into `Image` items whose URLs carry `?crop=`
     (see "CDN image transforms"), then reveal by toggling `visible` per tile. No canvas, no
     encoding, no `data:` URL question — updates are just visibility flags. Costs are item count
@@ -1012,6 +1218,152 @@ fast flick marginally over. Larger light radii raise the ceiling proportionally.
   returns `void`.
 - **Accepting the gaps as stylistically appropriate.** Considered and rejected: it is a usability
   loss, and a limitation should not be promoted to a feature.
+
+### Raster rendering is not available — measured 2026-08-01
+
+Prompted by the wish for a pencil texture and variable stroke width, which vectors are genuinely
+bad at: could the sketch be a raster with an alpha channel, computed once and then revealed and
+hidden live? Two probes were written to answer it (`debug/dataUrlProbe.ts`, `debug/blendProbe.ts`).
+The answer is no, and the reasons are worth keeping because they close several designs at once.
+
+**`data:` URLs do not render.** Reproduced across three runs:
+
+```
+32px  (0.3KB)   added OK   -> draws Owlbear's broken-image placeholder
+64px  (21.6KB)  REJECTED   -> refused by the scene outright
+```
+
+Two separate failures, and the second is the fatal one. There is a hard length ceiling somewhere
+between 0.3KB and 21.6KB — and *even the payload that was accepted does not load*. A 1.37MB
+attempt behaved differently again: `addItems` neither resolved nor rejected, it simply never
+returned, so a payload that large appears to break the message bus before validation runs.
+
+**Consequence: the only way to get pixels into the scene is `buildImageUpload`**, which pushes into
+the room's asset storage. That is networked, slow, and leaves the GM's asset library full of our
+debris — acceptable once per map, impossible for anything that updates as tokens move. So:
+
+- The **canvas-composite** variant of rendering mode 2 is dead.
+- The **tiles-plus-edge-masking hybrid** is dead with it, since its straddling ring needs exactly
+  this mechanism.
+- A **raster sketch** is dead for the same reason.
+
+The CDN-cropped tile variant survives on its own terms, since it uses `?crop=` on URLs the CDN
+already serves — but it was independently rejected for revealing whole tiles of map the party never
+saw, so nothing changes.
+
+**`Image` has no styling either**, which is worth stating alongside: checked against the SDK types,
+an `Image` carries only the base `Item` fields — `visible`, `position`, `scale`, `zIndex`. No
+opacity, no tint, no blend mode, no clipping. So even if pixels *could* be delivered, revealing them
+gradually would have no primitive to build on.
+
+### Shaders CAN texture the sketch — via an invisible stencil (2026-08-01)
+
+The most consequential result of the session, and it took nine cells to reach because the first four
+were read as closing a door that is in fact open.
+
+Nine `Path` cells on `CONTROL`, each over a cyan patch on `POINTER` so "cut away" could be told from
+"painted black" at a glance:
+
+```
+A  filled rect, no effect                        solid            paths render
+B  filled rect + STANDALONE SRC_OVER stripes     light stripes    the shader runs
+C  filled rect + STANDALONE DST_IN               BLACK gaps       blend did not reach the rect
+D  filled rect + ATTACHMENT DST_IN               BLACK gaps       nor did attaching help
+E  stroked line + ATTACHMENT SRC_OVER            NOTHING          clipped away entirely
+F  stroked line + STANDALONE SRC_OVER            whole cell       unattached effects are unclipped
+G  filled quad  + ATTACHMENT SRC_OVER            inside the quad  clipped to the parent's fill
+H  INVISIBLE quad + ATTACHMENT SRC_OVER          inside the quad  clip needs no visible fill
+I  filled quad  + ATTACHMENT DST_IN              BLACK bands      erosion still unavailable
+```
+
+**Two rules come out of this:**
+
+1. **An attached `Effect` is clipped to its parent's fill region**, and only its fill — E draws
+   nothing because a stroked centerline has no fill to clip to, while F, the same line unattached,
+   paints its whole rectangle.
+2. **The clip does not require the fill to be visible.** H's parent has `fillOpacity: 0` and the
+   effect still draws inside it, with its own alpha respected — white where the shader is opaque,
+   *transparent* where it is not.
+
+**So the parent can be a stencil rather than a drawing.** Emit each stroke as a closed, invisible
+outline whose only job is to bound where ink may go, attach a procedural SkSL effect, and let the
+shader paint the entire visible mark. Everything the raster idea was wanted for follows: grain,
+mottling, soft ends, and width that varies continuously along a stroke — at any zoom, still vector,
+no raster, no `data:` URL.
+
+**Erosion turns out to be unnecessary rather than merely unavailable.** `DST_IN` fails in C, D and I
+alike, but a shader that controls its own alpha inside the clip does not need to subtract from
+anything: where it wants nothing, it returns nothing, and H shows that reads as transparent.
+
+**`fillOpacity: 0`, not `visible: false`.** Attachment behaviours include `VISIBLE`, so hiding the
+parent outright would very likely take the effect with it. An invisible *fill* on a visible item is
+the distinction that makes this work, and it is easy to "tidy up" into a bug.
+
+Two things this still does not give. The shader cannot sample a texture — `Uniform.value` admits
+only `number | Vector2 | Vector3 | Matrix`, so every pattern must be computed, which rules out
+scanned graphite or an authored brush but leaves noise, fBm and hatching. And the *silhouette* is
+the stencil's, so the outline geometry has to be right; the shader shades within it but cannot
+extend past it.
+
+#### Better still: the shader can draw the stroke itself (cell J, 2026-08-01)
+
+The stencil above is superseded almost immediately, by a question from the user that exposed a
+mistake in it: **a clipped shader cannot soften the stencil's edge, because it has no idea where
+that edge is.** The clip is applied by the compositor after the shader runs, and no uniform carries
+the parent's geometry. So a stencil gives a hard silhouette and the outline has to be exactly right.
+
+The inversion works far better. Pass the stroke's *geometry* to the shader as uniforms and let it
+draw the mark, with no parent at all — `STANDALONE` effects respect their own alpha (bars B and F),
+so it paints where it wants and returns nothing elsewhere. And now it *can* soften its edges,
+because it knows where they are.
+
+**Cell J proved all four unknowns at once**, with four points passed as uniforms and a signed
+distance field over three segments:
+
+- **Custom uniforms work** — seven of them, `Vector2` and `float`.
+- **Constant-bound `for` loops compile.**
+- **An SDF gives genuinely soft edges and continuous taper** along a single mark.
+- **World mapping is stable under pan and zoom**, with no swimming and no crawling texture. Done by
+  normalising `coord` against the built-in `size` and interpolating across a world rect passed in,
+  so it holds however those are scaled — `model`/`modelView` were not needed. This was the decisive
+  one: §6 rejects time-seeded wobble for making the map appear to breathe, and a view-seeded texture
+  would be worse.
+
+So the sketch could become a few dozen `Effect` items carrying segment endpoints, with soft edges,
+taper and grain for free, no `Path` items, no stencil, and no nib geometry.
+
+**What still needs measuring before this is a design rather than a possibility:**
+
+- **Uniform count per effect, and the per-pixel cost of the loop.** J used three segments. The
+  sketch currently carries ~19k points after wobble subdivision, so grouping and chunking decide
+  whether this is thirty effects or three hundred.
+- **Overdraw.** Each effect shades its whole rectangle, so segments want grouping *spatially* or a
+  great many empty pixels get shaded.
+- **Smoothness.** The present renderer gets curves free from `QUAD` path commands; an SDF over
+  straight segments needs dense points to read as smooth. The wobble already subdivides finely, so
+  this may cost nothing — or it may be the thing that forces the point count up.
+- **A promising way out of both, untested:** the wobble is a position-based displacement, so the
+  shader could apply it by *domain warping* — displace the sample point before measuring distance,
+  rather than displacing the geometry. That would let the simplified polyline (~1.3k points) be
+  passed instead of the subdivided one (~19k), roughly a fifteenfold reduction. Whether warped
+  distances stay well-behaved enough to shade is the open part.
+- **Masking** becomes rebuilding uniform sets rather than adding and deleting items, which is
+  probably cheaper, but it is a different shape of work per redraw and has not been measured.
+
+Also still untested throughout: the cost of a large `Effect`, and scene items rather than the local
+ones used in every cell here.
+
+**Note the shader route was never going to reach a texture image anyway.** `Uniform.value` admits
+only `number | Vector2 | Vector3 | Matrix` — there is no shader or image uniform type, so a custom
+texture cannot be passed to SkSL at all. Only `POST_PROCESS`'s built-in `scene` uniform samples
+anything, and that route is already rejected under "Rejected alternatives" for coupling to how the
+fog happens to look. Any shader texture would have to be computed procedurally.
+
+**Where this leaves the aesthetic:** the sketch stays vector, and the levers are the ones already
+built — wobble amplitude and period, the multi-pass pencil, stroke width and colour — plus
+`strokeDash`, which is implemented and currently off. A calligraphic nib remains available and is
+purely geometric: emit a filled *outline* whose half-width varies with stroke direction, rather than
+a stroked centerline. That needs no capability the SDK lacks.
 
 ### Storage limits — measured 2026-07-26, and the folklore was wrong
 
@@ -1489,11 +1841,9 @@ keeping in the back pocket for a quick visual spike.
   3 works regardless — but worth deciding before step 5 wires masking to a specific renderer.
   Remember that the region is *under the fog*, so no mode can reveal the map by uncovering it;
   terrain has to be redrawn.
-- **Does an `Image` item accept a `data:` URL?** Gates the canvas-composite route entirely, and
-  is cheap to answer: build one local `Image` with a small `data:` URL and see whether it
-  renders. Worth doing opportunistically, well before step 5 depends on the answer. The
-  `?crop=` tile variant avoids the question but needs the CDN transform parameters to be
-  reliable, which is its own untested assumption.
+- ~~**Does an `Image` item accept a `data:` URL?**~~ **Answered 2026-08-01: no.** See "Raster
+  rendering is not available" below. This was the gate on the canvas-composite route and it is
+  shut.
 - **Can fog be revealed without mutating the GM's fog shapes?** Two five-minute tests, both in
   a scratch scene, and together they decide whether the fog route is viable at all — see
   "Editing the fog directly". First: does editing a fog shape change the walls Dynamic Fog

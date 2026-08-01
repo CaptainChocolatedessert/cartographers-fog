@@ -16,11 +16,14 @@
 
 import OBR from "@owlbear-rodeo/sdk";
 
+import { DEFAULT_APPEARANCE, type Appearance } from "./appearance";
+import { readAppearance } from "./appearanceStore";
 import { loadMapRaster, resolveSketchMap } from "./mapImage";
 import { selectSketchSegments } from "./mask";
 import { readSketchSettings } from "./sketchSettings";
 import { marginSource, wallMargin } from "./wallMargin";
 import { clearStrokes, renderStrokes } from "./strokes";
+import { pencilPasses } from "./pencil";
 import { toWorldSegments } from "./placement";
 import { traceOptionsFor, wobbleOptionsFor } from "./traceSettings";
 import { wobbleSegments } from "./wobble";
@@ -33,14 +36,43 @@ import type { Vector2 } from "../geometry/vector";
 interface TracedMap {
   readonly mapId: string;
   readonly url: string;
-  /** Already in world space, so rendering never repeats the transform. */
+  /**
+   * Already in world space, so rendering never repeats the transform.
+   *
+   * **The masking geometry**, and the only geometry masked. The pencil passes below are drawn from
+   * the decisions made about these.
+   */
   readonly segments: readonly TracedSegment[];
+  /**
+   * What is actually drawn: one entry per pencil pass, each index-aligned with `segments`.
+   *
+   * Built here rather than at render time because a pass is a displacement of the whole polyline —
+   * the same cost as the wobble, and static for the same reason, so paying it per redraw would be
+   * paying it several times a second during a drag. With the texture off this is `[segments]` and
+   * costs nothing.
+   */
+  readonly passes: readonly (readonly TracedSegment[])[];
   readonly dpi: number;
   /** How far either side of a stroke counts as the same place — see `wallMargin.ts`. */
   readonly margin: number;
 }
 
 let traced: TracedMap | null = null;
+
+/**
+ * The GM's shared look, cached so a redraw does not cost a metadata round trip — redraws run on
+ * every visibility change, which is several a second while a token moves.
+ *
+ * Seeded with the defaults rather than left unset, so a render arriving before the first read
+ * draws the shipped look instead of nothing. `setAppearance` keeps it current; the tracker owns
+ * deciding whether a change needs a re-trace or only a redraw (`invalidatesTrace`).
+ */
+let appearance: Appearance = DEFAULT_APPEARANCE;
+
+/** Adopt a new look. Callers must re-render; whether they must also re-trace is their decision. */
+export function setAppearance(next: Appearance): void {
+  appearance = next;
+}
 
 /**
  * Guards against two traces overlapping. The scene becoming ready and a map choice arriving can
@@ -89,14 +121,36 @@ export async function prepareSketch(): Promise<boolean> {
     const result = traceImage(raster.pixels, options);
     const dpi = await OBR.scene.grid.getDpi();
 
+    // Read here rather than trusting the cached copy: a trace may be the first thing this client
+    // does, before any metadata change has been observed.
+    appearance = await readAppearance();
+
     // Wobbled once, here, rather than per render. The displacement is a pure function of world
     // position (DESIGN.md §6 — never of time), so it is the same on every redraw and there is
     // nothing to recompute when a token moves.
+    //
+    // Being baked in here is exactly why toggling wobble has to come back through this function
+    // rather than through `renderSketch` — see `appearance.ts`, `invalidatesTrace`.
     const startedWobble = performance.now();
+    const wobble = wobbleOptionsFor(
+      dpi,
+      appearance.wobbleSquares,
+      appearance.wobbleWavelengthSquares,
+    );
     const segments = wobbleSegments(
       toWorldSegments(result.segments, raster.placement),
-      wobbleOptionsFor(dpi),
+      wobble,
     );
+
+    // The pencil passes share the wobble's wavelength and step deliberately — see `pencil.ts`.
+    // A finer scatter period would need a finer subdivision or it would alias into white noise.
+    const passes = pencilPasses(segments, {
+      passes: appearance.pencilPasses,
+      scatter: dpi * appearance.pencilScatterSquares,
+      wavelength: wobble.wavelength,
+      step: wobble.step,
+      seed: wobble.seed,
+    });
     const wobbleMs = performance.now() - startedWobble;
 
     // Measured from the map's own ink rather than the grid, because `getDpi` still returns a
@@ -115,7 +169,7 @@ export async function prepareSketch(): Promise<boolean> {
     };
     const margin = wallMargin(marginInputs);
 
-    traced = { mapId: raster.mapId, url: raster.url, segments, dpi, margin };
+    traced = { mapId: raster.mapId, url: raster.url, segments, passes, dpi, margin };
 
     devLog(
       "info",
@@ -178,7 +232,16 @@ export async function renderSketch(
     visible,
     traced.margin,
   );
-  await renderStrokes(selection.segments, traced.dpi);
+
+  // One masking decision, applied to every pass by index. Masking each pass on its own midpoint
+  // would let them wink in and out separately at the region boundary — the texture would shimmer
+  // wherever a token moved, which is exactly where the eye already is.
+  const drawn =
+    traced.passes.length === 1
+      ? [selection.segments]
+      : traced.passes.map((pass) => selection.indices.map((i) => pass[i]!));
+
+  await renderStrokes(drawn, traced.dpi, appearance);
 
   return {
     drawn: selection.segments.length,

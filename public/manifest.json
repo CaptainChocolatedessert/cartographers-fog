@@ -5,5 +5,12 @@
   "author": "Captain Chocolatedessert",
   "homepage_url": "https://github.com/CaptainChocolatedessert/cartographers-fog",
   "description": "Hand-drawn persistent fog. Explored areas stay on the map as a sketch. Companion to Dynamic Fog.",
-  "background_url": "/cartographers-fog/background.html"
+  "background_url": "/cartographers-fog/background.html",
+  "action": {
+    "title": "Cartographer's Fog",
+    "icon": "/cartographers-fog/sketch-action.svg",
+    "popover": "/cartographers-fog/panel.html",
+    "width": 320,
+    "height": 460
+  }
 }

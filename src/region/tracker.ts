@@ -48,8 +48,16 @@ import {
   prepareSketch,
   renderSketch,
   resetSketch,
+  setAppearance,
   sketchSegmentCount,
 } from "../sketch/sketch";
+import {
+  DEFAULT_APPEARANCE,
+  differs,
+  invalidatesTrace,
+  type Appearance,
+} from "../sketch/appearance";
+import { onAppearanceChange, readAppearance } from "../sketch/appearanceStore";
 import { boundingBox } from "../geometry/polygon";
 import {
   latestSnapshot,
@@ -131,7 +139,11 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unsubscribeVisibility: (() => void) | undefined;
 let unsubscribeRegion: (() => void) | undefined;
 let unsubscribeMapChoice: (() => void) | undefined;
+let unsubscribeAppearance: (() => void) | undefined;
 let rendering = false;
+
+/** The look this client is currently drawing with — see the subscription in `initialiseForScene`. */
+let appearance: Appearance = DEFAULT_APPEARANCE;
 
 /** A redraw was requested while one was in flight, and must run once this one finishes. */
 let renderAgain = false;
@@ -222,6 +234,15 @@ async function initialiseForScene(): Promise<void> {
     // without this a client would keep showing ground the scene no longer claims, and the GM
     // would write its stale copy straight back on the next move.
     if (!incoming) {
+      // Any pending write belongs to the region just cleared. Without cancelling it, a clear
+      // arriving while a token is settling would be undone a moment later by a debounced write of
+      // the pre-clear mask — and the clear would appear to have silently failed. `clearDiscoveredRegion`
+      // cancels its own timer, but a clear can now also arrive from the settings panel, which runs
+      // in its own iframe and shares none of this module's state.
+      if (persistTimer !== undefined) clearTimeout(persistTimer);
+      persistTimer = undefined;
+      regionDirty = false;
+
       discovered = createMask(grid);
       lastSampled.clear();
       trajectory.clear();
@@ -252,6 +273,24 @@ async function initialiseForScene(): Promise<void> {
     void buildSketch();
   });
 
+  // Appearance is shared through *room* metadata, so this runs on every client — the panel is
+  // GM-only, but applying what the GM chose is everyone's job.
+  //
+  // The branch is the point. Colour and width are PathStyle on items that already exist, so they
+  // need a redraw; wobble is baked into the geometry at trace time and needs the map tracing
+  // again. Collapsing the two either burns a few hundred milliseconds every time a colour slider
+  // moves, or leaves a wobble toggle doing nothing until the scene reloads.
+  appearance = await readAppearance();
+  setAppearance(appearance);
+  unsubscribeAppearance = onAppearanceChange((next) => {
+    if (!differs(appearance, next)) return;
+    const retrace = invalidatesTrace(appearance, next);
+    appearance = next;
+    setAppearance(next);
+    if (retrace) void buildSketch();
+    else void render();
+  });
+
   // Not awaited. Tracing is a few hundred milliseconds of synchronous work and the wash should
   // appear immediately; the strokes join it when the trace lands.
   void buildSketch();
@@ -276,6 +315,8 @@ async function teardownScene(): Promise<void> {
   unsubscribeRegion = undefined;
   unsubscribeMapChoice?.();
   unsubscribeMapChoice = undefined;
+  unsubscribeAppearance?.();
+  unsubscribeAppearance = undefined;
   sketchSettings = undefined;
   // A queued redraw belongs to the scene being torn down; letting it fire would repaint from
   // state the next scene is about to replace.

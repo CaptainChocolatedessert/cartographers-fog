@@ -32,6 +32,10 @@ export default defineConfig({
         main: "index.html",
         // Headless extension entry point, loaded by Owlbear via manifest background_url.
         background: "background.html",
+        // The GM's settings panel, loaded by Owlbear via the manifest action's `popover`.
+        // Unlike trace.html — which is deliberately absent so it is never published — this one
+        // must be listed, because it ships.
+        panel: "panel.html",
       },
     },
   },
