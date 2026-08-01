@@ -11,6 +11,9 @@ import {
   MAX_WOBBLE_WAVELENGTH_SQUARES,
   MIN_WIDTH_SQUARES,
   MIN_WOBBLE_WAVELENGTH_SQUARES,
+  MAX_GRAIN_SCALE_SQUARES,
+  MIN_GRAIN_SCALE_SQUARES,
+  BRUSHES,
   differs,
   fromRoomMetadata,
   invalidatesTrace,
@@ -42,7 +45,21 @@ describe("fromRoomMetadata", () => {
           pencilOpacity: 0.5,
           pencilScatterSquares: 0.03,
           renderer: "shader",
-          featherFraction: 0.4,
+          brush: "charcoal",
+          brushes: {
+            liner: {
+              featherFraction: 0.4,
+              grainScaleSquares: 0.05,
+              grainDepth: 0,
+              edgeRoughness: 0,
+            },
+            charcoal: {
+              featherFraction: 0.5,
+              grainScaleSquares: 0.06,
+              grainDepth: 0.4,
+              edgeRoughness: 0.7,
+            },
+          },
         }),
       ),
     ).toEqual({
@@ -54,7 +71,21 @@ describe("fromRoomMetadata", () => {
       pencilOpacity: 0.5,
       pencilScatterSquares: 0.03,
       renderer: "shader",
-      featherFraction: 0.4,
+      brush: "charcoal",
+      brushes: {
+        liner: {
+          featherFraction: 0.4,
+          grainScaleSquares: 0.05,
+          grainDepth: 0,
+          edgeRoughness: 0,
+        },
+        charcoal: {
+          featherFraction: 0.5,
+          grainScaleSquares: 0.06,
+          grainDepth: 0.4,
+          edgeRoughness: 0.7,
+        },
+      },
     });
   });
 
@@ -235,30 +266,128 @@ describe("renderer", () => {
   });
 });
 
-describe("featherFraction", () => {
-  it("clamps into range and falls back on nonsense", () => {
-    expect(fromRoomMetadata(wrap({ featherFraction: 5 })).featherFraction).toBe(1);
-    expect(fromRoomMetadata(wrap({ featherFraction: -2 })).featherFraction).toBe(0);
-    expect(fromRoomMetadata(wrap({ featherFraction: "soft" })).featherFraction).toBe(
-      DEFAULT_APPEARANCE.featherFraction,
+describe("brushes", () => {
+  const liner = (metadata: Record<string, unknown>) =>
+    fromRoomMetadata(metadata).brushes.liner;
+
+  it("defaults to the liner, so choosing Brushes cannot lose the judged look", () => {
+    // The clean soft edge is what was judged in a room and made the default renderer. Charcoal is
+    // new and unjudged, so landing on it by default would change every table's map unasked.
+    expect(DEFAULT_APPEARANCE.brush).toBe("liner");
+    expect(fromRoomMetadata({}).brush).toBe("liner");
+    expect(fromRoomMetadata(wrap({ brush: "airbrush" })).brush).toBe("liner");
+  });
+
+  it("ships charcoal at the values judged in a room", () => {
+    // Tuned by eye 2026-08-01 and accepted. Pinned for the same reason the ink colour and stroke
+    // width are: changing a judged default changes what every table sees on its next reload, so it
+    // should be a deliberate edit that breaks a test rather than a quiet one that does not.
+    expect(DEFAULT_APPEARANCE.brushes.charcoal).toEqual({
+      featherFraction: 0.5,
+      grainScaleSquares: 0.09,
+      grainDepth: 0.6,
+      edgeRoughness: 0.85,
+    });
+  });
+
+  it("gives every brush a full settings block", () => {
+    // A uniform shape across brushes, even where a brush ignores fields. Anything reading
+    // `brushes[id]` must never find a hole, whichever brush is selected.
+    for (const id of BRUSHES) {
+      const settings = fromRoomMetadata({}).brushes[id];
+      expect(Number.isFinite(settings.featherFraction)).toBe(true);
+      expect(Number.isFinite(settings.grainScaleSquares)).toBe(true);
+      expect(Number.isFinite(settings.grainDepth)).toBe(true);
+      expect(Number.isFinite(settings.edgeRoughness)).toBe(true);
+    }
+  });
+
+  it("keeps each brush's settings independent", () => {
+    // The reason they are stored per brush at all: tuning charcoal must not disturb the liner, so
+    // switching back and forth compares two tuned looks rather than one tuned and one trampled.
+    const read = fromRoomMetadata(
+      wrap({
+        brushes: {
+          liner: { featherFraction: 0.1 },
+          charcoal: { featherFraction: 0.9, edgeRoughness: 0.2 },
+        },
+      }),
+    );
+
+    expect(read.brushes.liner.featherFraction).toBeCloseTo(0.1, 6);
+    expect(read.brushes.charcoal.featherFraction).toBeCloseTo(0.9, 6);
+    expect(read.brushes.charcoal.edgeRoughness).toBeCloseTo(0.2, 6);
+    // Untouched fields fall back rather than inheriting from the other brush.
+    expect(read.brushes.liner.edgeRoughness).toBe(
+      DEFAULT_APPEARANCE.brushes.liner.edgeRoughness,
     );
   });
 
-  it("keeps zero rather than treating it as unset", () => {
-    // Zero is a real setting — a hard edge, the same silhouette Lines gives — so a falsy check here
-    // would silently spring it back to the default and the control would appear to have a floor.
-    expect(fromRoomMetadata(wrap({ featherFraction: 0 })).featherFraction).toBe(0);
+  it("migrates the old top-level featherFraction onto the liner only", () => {
+    // That key was the one edge that existed before brushes did, so a room that tuned it keeps the
+    // value. Applying it to charcoal too would import a number chosen for a different medium.
+    const read = fromRoomMetadata(wrap({ featherFraction: 0.12 }));
+
+    expect(read.brushes.liner.featherFraction).toBeCloseTo(0.12, 6);
+    expect(read.brushes.charcoal.featherFraction).toBe(
+      DEFAULT_APPEARANCE.brushes.charcoal.featherFraction,
+    );
   });
 
-  it("is a redraw, not a re-trace", () => {
-    // It travels as a uniform on effects rebuilt every redraw anyway. Were it in `invalidatesTrace`
-    // every nudge of the slider would re-trace the map — a few hundred milliseconds per pixel of
-    // travel, on the one control most likely to be dragged back and forth while tuning by eye.
-    const before = DEFAULT_APPEARANCE;
-    const after = { ...DEFAULT_APPEARANCE, featherFraction: 0.6 };
+  it("prefers a stored brush block over the legacy key", () => {
+    expect(
+      liner(wrap({ featherFraction: 0.12, brushes: { liner: { featherFraction: 0.4 } } }))
+        .featherFraction,
+    ).toBeCloseTo(0.4, 6);
+  });
 
-    expect(invalidatesTrace(before, after)).toBe(false);
-    expect(differs(before, after)).toBe(true);
+  it("clamps and falls back per field", () => {
+    expect(liner(wrap({ brushes: { liner: { featherFraction: 5 } } })).featherFraction).toBe(1);
+    expect(liner(wrap({ brushes: { liner: { featherFraction: -2 } } })).featherFraction).toBe(0);
+    expect(
+      liner(wrap({ brushes: { liner: { featherFraction: "soft" } } })).featherFraction,
+    ).toBe(DEFAULT_APPEARANCE.brushes.liner.featherFraction);
+    expect(
+      liner(wrap({ brushes: { liner: { grainScaleSquares: 99 } } })).grainScaleSquares,
+    ).toBe(MAX_GRAIN_SCALE_SQUARES);
+    expect(
+      liner(wrap({ brushes: { liner: { grainScaleSquares: 0 } } })).grainScaleSquares,
+    ).toBe(MIN_GRAIN_SCALE_SQUARES);
+  });
+
+  it("keeps a zero feather rather than treating it as unset", () => {
+    // Zero is a real setting — a hard edge, the same silhouette Lines gives — so a falsy check
+    // would spring it back to the default and the control would appear to have a floor.
+    expect(liner(wrap({ brushes: { liner: { featherFraction: 0 } } })).featherFraction).toBe(0);
+  });
+
+  it("survives a brushes value that is not an object", () => {
+    for (const nonsense of [null, 7, "charcoal", []]) {
+      expect(() => fromRoomMetadata(wrap({ brushes: nonsense }))).not.toThrow();
+      expect(fromRoomMetadata(wrap({ brushes: nonsense })).brushes.charcoal).toEqual(
+        DEFAULT_APPEARANCE.brushes.charcoal,
+      );
+    }
+  });
+
+  it("notices a brush change and a brush setting change, without re-tracing", () => {
+    // `differs` compares a nested record here, so a shallow compare would leave every grain slider
+    // apparently dead. And none of it is geometry, so a re-trace would be several hundred
+    // milliseconds per nudge on controls meant to be dragged.
+    const before = DEFAULT_APPEARANCE;
+    const switched = { ...before, brush: "charcoal" as const };
+    const tuned = {
+      ...before,
+      brushes: {
+        ...before.brushes,
+        charcoal: { ...before.brushes.charcoal, edgeRoughness: 0.2 },
+      },
+    };
+
+    expect(differs(before, switched)).toBe(true);
+    expect(differs(before, tuned)).toBe(true);
+    expect(invalidatesTrace(before, switched)).toBe(false);
+    expect(invalidatesTrace(before, tuned)).toBe(false);
   });
 });
 

@@ -35,7 +35,7 @@ import {
   toPieces,
   type SdfStyle,
 } from "./sdf";
-import type { Appearance } from "./appearance";
+import { BRUSHES, type Appearance, type BrushId } from "./appearance";
 import type { TracedSegment } from "../trace/chop";
 
 const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
@@ -73,15 +73,21 @@ const SKETCH_LAYER = "CONTROL" as const;
 const BATCH_SIZE = 32;
 
 /**
- * The SkSL, compiled from a batch size that never changes at runtime.
+ * One compiled source per brush, built once and reused.
  *
- * Hoisted to module scope to make that visible. Nothing here may become a function of the
- * appearance or of what is currently visible: a source string that varied per redraw would
- * recompile every effect each time a token moved, which is the failure the whole padded-slot design
- * exists to avoid. Everything that *does* vary — colour, width, feather, geometry, which slots are
- * occupied — travels as uniforms.
+ * **The source may depend on the brush but on nothing else.** A brush is a different program —
+ * charcoal declares grain uniforms and runs noise the liner does not have — so it genuinely needs
+ * its own string. What it must never depend on is anything that changes as play proceeds: a source
+ * varying per redraw would recompile every effect each time a token moved, which is the failure the
+ * whole padded-slot design exists to avoid. Colour, width, feather, grain, geometry and which slots
+ * are occupied all travel as uniforms instead.
+ *
+ * Built eagerly for every brush rather than lazily, so switching brushes costs no string work on a
+ * redraw and the set is small and fixed.
  */
-const SOURCE = sdfSource(BATCH_SIZE);
+const SOURCES: Record<BrushId, string> = Object.fromEntries(
+  BRUSHES.map((id) => [id, sdfSource(BATCH_SIZE, id)]),
+) as Record<BrushId, string>;
 
 /**
  * Replace the sketch with these segments.
@@ -108,14 +114,29 @@ export async function renderShaderStrokes(
   // renderer supersedes.
   const strokes = passes[0] ?? [];
 
+  const brush = appearance.brush;
+  const settings = appearance.brushes[brush];
   const halfWidth = Math.max(0.5, dpi * appearance.strokeWidthSquares) / 2;
   const style: SdfStyle = {
     halfWidth,
     // A fraction of the half-width rather than an absolute distance, so the softness holds its
     // proportion when the stroke width changes. An absolute feather would make a thin line all
     // fade and a thick one look hard-edged, and the two controls would appear to fight.
-    feather: halfWidth * appearance.featherFraction,
+    feather: halfWidth * settings.featherFraction,
     ink: parseHexColor(appearance.strokeColor),
+    // Only for brushes whose source declares the grain uniforms. Supplying them to the liner would
+    // be a uniform it never declares; withholding them from charcoal would be one it declares and
+    // never receives. Both are silent failures, so the condition matches `sdfSource` exactly.
+    ...(brush === "charcoal"
+      ? {
+          grain: {
+            // In grid squares, so paper tooth keeps its scale on a map of any density.
+            scale: dpi * settings.grainScaleSquares,
+            depth: settings.grainDepth,
+            roughness: settings.edgeRoughness,
+          },
+        }
+      : {}),
   };
 
   // Expanded by the full reach of the ink. An effect cannot draw outside its own rectangle, so
@@ -130,7 +151,7 @@ export async function renderShaderStrokes(
         .width(bounds.max.x - bounds.min.x)
         .height(bounds.max.y - bounds.min.y)
         .position({ x: bounds.min.x, y: bounds.min.y })
-        .sksl(SOURCE)
+        .sksl(SOURCES[brush])
         .uniforms([...buildUniforms(batch, bounds, style, BATCH_SIZE)])
         // `STANDALONE`, with no parent. An *attached* effect is clipped to its parent's fill and
         // never learns where that clip is, so it cannot soften its own edge — which is the one

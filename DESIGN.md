@@ -1507,6 +1507,56 @@ chain, which is why moving down helps twice over. Tightening the batching so box
 geometry attacks the same term without costing more items, and is the next lever if the slot count
 bottoms out.
 
+##### Brushes — charcoal, built and judged good 2026-08-01
+
+The shader renderer's aesthetic layer. "Brush" in the drawing-app sense, so a nib pen and a pencil
+will sit under it comfortably when they arrive. Two ship: **liner**, the clean soft-edged mark the
+renderer already had, named rather than left implicit so that choosing Brushes cannot lose the
+appearance already judged; and **charcoal**, which adds procedural grain.
+
+**The governing constraint is that there are no textures.** The standard way to draw charcoal — or
+any of these — is to stamp a scanned grain bitmap along the path, and `Uniform.value` admits only
+numbers, vectors and matrices. Everything must be computed. That suits charcoal well, because
+granularity genuinely *is* what the medium looks like rather than a texture standing in for it. It
+will suit a nib pen well too, being purely geometric. It suits a wet ink brush least, since that
+medium's character comes from bristle separation and pigment pooling, which are normally authored —
+worth saying before that one is attempted.
+
+**Charcoal is two noise fields, and only one of them is optional:**
+
+1. **Displace the alpha threshold** by fBm, so the *silhouette* breaks up — the mark skips the way a
+   stick does over paper.
+2. **Multiply density** by a second, decorrelated field, so ink sits unevenly inside it.
+
+Doing only (2) gives a clean-edged shape with a dirty middle, which reads as a textured sticker
+rather than a drawn mark. Both fields are keyed to **world** position, never to `coord`: §6 forbids
+a texture that moves with the view, and a test pins it.
+
+**Cost: the noise runs once per pixel, *after* the unrolled distance chain, never inside it.** Inside
+it would be paid `batchSize` times. Two fBm octaves rather than the usual four or five, chosen for
+cost — octave count is the first lever if grain ever gets expensive. A test slices the generated
+source between the distance seed and the alpha ramp and asserts no `fbm2` call appears there.
+
+**Judged in a room and tuned by eye** (user, 2026-08-01): edge 50%, grain size 0.09 squares, grain
+60%, tooth 85% — now the defaults, and pinned by a test. Note which way the tuning went: grain
+coarser than first guessed, at roughly the width of the stroke itself (which ships at a twelfth of a
+square) rather than far below it.
+
+**Performance held.** Panning is fine at every zoom with the whole map discovered. The redraw after
+a token moves is noticeably slower — which is the *rebuild*, not the shading, exactly the
+distinction recorded under the batch size measurements, and the thing phase 5's incremental updates
+would fix. Accepted as fine for now.
+
+**Each brush stores its own settings** (`Appearance.brushes`, a record keyed by brush). Tuning
+charcoal must not disturb the liner, so switching back and forth compares two tuned looks rather
+than one tuned and one trampled. Colour, stroke width, wobble and period stay **shared**: wobble
+necessarily, since it is baked into the traced geometry both renderers consume, and the other two by
+judgment — they describe the mark whatever draws it.
+
+The panel says **"Color", not "Ink"**, since charcoal is not ink and a label naming one medium reads
+as wrong under any brush that is not that medium. The stored key remains `strokeColor`; renaming it
+would lose the colour of every room that has written one.
+
 ##### Parked: making the shader renderer faster
 
 Deliberately not pursued (user, 2026-08-01). It is usable at 32 and the look is judged good; this is

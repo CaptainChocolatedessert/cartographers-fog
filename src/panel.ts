@@ -30,10 +30,13 @@
 import OBR from "@owlbear-rodeo/sdk";
 
 import {
+  DEFAULT_APPEARANCE,
   MAX_WIDTH_SQUARES,
   MAX_WOBBLE_SQUARES,
   MIN_WIDTH_SQUARES,
   type Appearance,
+  type BrushId,
+  type BrushSettings,
   type Renderer,
 } from "./sketch/appearance";
 import {
@@ -80,11 +83,19 @@ const passesInput = element<HTMLInputElement>("passes");
 const passesValue = element("passesValue");
 const passOpacityInput = element<HTMLInputElement>("passOpacity");
 const passOpacityValue = element("passOpacityValue");
+const brushInput = element<HTMLSelectElement>("brush");
 const featherInput = element<HTMLInputElement>("feather");
 const featherValue = element("featherValue");
 const featherNote = element("featherNote");
+const grainScaleInput = element<HTMLInputElement>("grainScale");
+const grainScaleValue = element("grainScaleValue");
+const grainDepthInput = element<HTMLInputElement>("grainDepth");
+const grainDepthValue = element("grainDepthValue");
+const edgeRoughnessInput = element<HTMLInputElement>("edgeRoughness");
+const edgeRoughnessValue = element("edgeRoughnessValue");
 const shaderOnly = element("shaderOnly");
 const strokesOnly = element("strokesOnly");
+const grainOnly = element("grainOnly");
 const scatterInput = element<HTMLInputElement>("scatter");
 const scatterValue = element("scatterValue");
 const pencilNote = element("pencilNote");
@@ -212,7 +223,7 @@ function showPencilNote(
 function showRendererNote(renderer: Renderer): void {
   rendererNote.textContent =
     renderer === "shader"
-      ? "Soft edges, drawn per pixel."
+      ? "Marks drawn per pixel. Each brush keeps its own settings."
       : "Hard-edged vector lines. Much cheaper to draw.";
 }
 
@@ -228,10 +239,58 @@ function showRendererNote(renderer: Renderer): void {
  * Hidden, not disabled. A disabled row still occupies a short panel and still invites the question.
  * The stored values survive either way, so switching back restores what was set.
  */
-function showRelevantControls(renderer: Renderer): void {
+function showRelevantControls(renderer: Renderer, brush: BrushId): void {
   shaderOnly.hidden = renderer !== "shader";
   strokesOnly.hidden = renderer !== "strokes";
+  // Grain is charcoal's alone. Under the liner these sliders would move and change nothing, which
+  // reads as a broken brush rather than as controls that do not apply.
+  grainOnly.hidden = renderer !== "shader" || brush !== "charcoal";
 }
+
+/**
+ * The whole appearance as last seen, so a brush write can be composed against it.
+ *
+ * `writeAppearance` merges shallowly, so writing one brush's slider means sending the *entire*
+ * `brushes` record — send only the edited brush and every other brush's tuning is erased. This is
+ * also updated optimistically in `queueBrush`, because two slider moves inside one debounce window
+ * would otherwise both build on the same stale record and the first would be lost.
+ */
+let current: Appearance = DEFAULT_APPEARANCE;
+
+/** Queue a change to the *currently selected* brush, preserving every other brush's settings. */
+function queueBrush(changes: Partial<BrushSettings>): void {
+  const id = current.brush;
+  const brushes = {
+    ...current.brushes,
+    [id]: { ...current.brushes[id], ...changes },
+  };
+  current = { ...current, brushes };
+  queueAppearance({ brushes });
+}
+
+function showBrushSettings(settings: BrushSettings): void {
+  const feather = featherHundredthsFor(settings.featherFraction);
+  featherInput.value = String(feather);
+  featherValue.textContent = `${feather}%`;
+  showFeatherNote(settings.featherFraction);
+
+  const scale = grainThousandthsFor(settings.grainScaleSquares);
+  grainScaleInput.value = String(scale);
+  grainScaleValue.textContent = grainSquaresFor(scale).toFixed(3);
+
+  const depth = Math.round(settings.grainDepth * 100);
+  grainDepthInput.value = String(depth);
+  grainDepthValue.textContent = `${depth}%`;
+
+  const rough = Math.round(settings.edgeRoughness * 100);
+  edgeRoughnessInput.value = String(rough);
+  edgeRoughnessValue.textContent = `${rough}%`;
+}
+
+/** Grain cell size is carried in thousandths of a grid square. */
+const grainSquaresFor = (thousandths: number): number => thousandths / 1000;
+const grainThousandthsFor = (squares: number): number =>
+  Math.round(squares * 1000);
 
 /** Feather is carried in hundredths of the stroke's half-width. */
 const featherFractionFor = (hundredths: number): number => hundredths / 100;
@@ -290,13 +349,13 @@ function queueAppearance(changes: Partial<Appearance>): void {
  */
 function showAppearance(appearance: Appearance): void {
   if (writeTimer !== undefined) return;
+  // Kept so brush writes can be composed against the whole record — see `queueBrush`.
+  current = appearance;
   rendererInput.value = appearance.renderer;
+  brushInput.value = appearance.brush;
   showRendererNote(appearance.renderer);
-  showRelevantControls(appearance.renderer);
-  const feather = featherHundredthsFor(appearance.featherFraction);
-  featherInput.value = String(feather);
-  featherValue.textContent = `${feather}%`;
-  showFeatherNote(appearance.featherFraction);
+  showRelevantControls(appearance.renderer, appearance.brush);
+  showBrushSettings(appearance.brushes[appearance.brush]);
   colorInput.value = appearance.strokeColor;
   const rank = rankFor(appearance.strokeWidthSquares);
   widthInput.value = String(rank);
@@ -573,13 +632,42 @@ async function start(): Promise<void> {
     featherValue.textContent = `${featherHundredthsFor(fraction)}%`;
     showFeatherNote(fraction);
     // A uniform on effects that get rebuilt anyway, so a redraw — not in `invalidatesTrace`.
-    queueAppearance({ featherFraction: fraction });
+    queueBrush({ featherFraction: fraction });
+  });
+
+  grainScaleInput.addEventListener("input", () => {
+    const squares = grainSquaresFor(Number(grainScaleInput.value));
+    grainScaleValue.textContent = squares.toFixed(3);
+    queueBrush({ grainScaleSquares: squares });
+  });
+
+  grainDepthInput.addEventListener("input", () => {
+    const depth = Number(grainDepthInput.value) / 100;
+    grainDepthValue.textContent = `${Math.round(depth * 100)}%`;
+    queueBrush({ grainDepth: depth });
+  });
+
+  edgeRoughnessInput.addEventListener("input", () => {
+    const roughness = Number(edgeRoughnessInput.value) / 100;
+    edgeRoughnessValue.textContent = `${Math.round(roughness * 100)}%`;
+    queueBrush({ edgeRoughness: roughness });
+  });
+
+  brushInput.addEventListener("change", () => {
+    const brush = brushInput.value as BrushId;
+    // Adopt the chosen brush's own stored values rather than leaving the previous brush's on the
+    // sliders — that is the whole point of storing them per brush.
+    current = { ...current, brush };
+    showRelevantControls(current.renderer, brush);
+    showBrushSettings(current.brushes[brush]);
+    queueAppearance({ brush });
   });
 
   rendererInput.addEventListener("change", () => {
     const renderer = rendererInput.value as Renderer;
+    current = { ...current, renderer };
     showRendererNote(renderer);
-    showRelevantControls(renderer);
+    showRelevantControls(renderer, current.brush);
     // `change`, not `input`, and no debounce needed — a select fires once when the choice settles
     // rather than continuously, so this cannot meet the rate limiter the sliders have to dodge.
     // A redraw only: both renderers consume the same wobbled geometry, which is what makes them

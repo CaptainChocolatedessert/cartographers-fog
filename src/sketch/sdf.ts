@@ -36,6 +36,7 @@
  * defined`. Hit twice already on this project.
  */
 
+import type { BrushId } from "./appearance";
 import type { TracedSegment } from "../trace/chop";
 import type { Vector2 } from "../geometry/vector";
 
@@ -77,6 +78,33 @@ export interface SdfStyle {
   readonly feather: number;
   /** Ink colour as linear 0–1 components — `parseHexColor` converts from the stored `#rrggbb`. */
   readonly ink: { readonly x: number; readonly y: number; readonly z: number };
+  /** Grain, for brushes that have it. Ignored by `liner`, required by `charcoal`. */
+  readonly grain?: SdfGrain;
+}
+
+/**
+ * Procedural grain, in world units and 0–1 strengths.
+ *
+ * **Procedural because there is no alternative.** The usual way to draw charcoal is to stamp a
+ * scanned grain bitmap along the path, and `Uniform.value` admits only numbers, vectors and
+ * matrices — no texture can ever reach the shader (DESIGN.md, "Raster rendering is not available").
+ * So the tooth is computed from world position. That suits charcoal better than it would suit a wet
+ * brush: granularity genuinely *is* what the medium looks like, rather than a texture standing in
+ * for one.
+ */
+export interface SdfGrain {
+  /** World size of one grain cell. Larger is coarser paper. */
+  readonly scale: number;
+  /** How much the grain eats into density, 0–1. Zero leaves a flat mark. */
+  readonly depth: number;
+  /**
+   * How ragged the silhouette is, as a fraction of the half-width.
+   *
+   * The single most important term for reading as a dry medium, and the cheapest. Rather than
+   * fading a smooth edge, it *displaces the threshold* per pixel — so the outline itself breaks up
+   * the way a stick of charcoal skips over paper, instead of merely blurring.
+   */
+  readonly roughness: number;
 }
 
 /**
@@ -251,6 +279,18 @@ export function buildUniforms(
     { name: "ink", value: { x: style.ink.x, y: style.ink.y, z: style.ink.z } },
   ];
 
+  // Only when the brush has grain, and the source must agree — a uniform the shader does not
+  // declare, or a declared one never supplied, is a mismatch the SDK reports as nothing rendering.
+  // `uniformsMatchSource` in the tests pins the two together.
+  if (style.grain) {
+    uniforms.push(
+      // Guarded for the same reason as the span: the shader divides world position by this.
+      { name: "grainScale", value: nonZero(style.grain.scale) },
+      { name: "grainDepth", value: style.grain.depth },
+      { name: "edgeRoughness", value: style.grain.roughness },
+    );
+  }
+
   for (let i = 0; i < batchSize; i++) {
     const piece = pieces[i];
     uniforms.push({ name: `p${i}a`, value: piece ? { ...piece.a } : parked });
@@ -298,7 +338,7 @@ function nonZero(value: number): number {
  * gives a genuinely soft edge, re-evaluated per screen pixel at the current zoom, so it stays smooth
  * however far in the view goes. Nothing is stored as a bitmap.
  */
-export function sdfSource(batchSize: number): string {
+export function sdfSource(batchSize: number, brush: BrushId = "liner"): string {
   if (batchSize < 1) throw new Error(`batchSize must be at least 1, got ${batchSize}`);
 
   const declarations: string[] = [];
@@ -308,13 +348,15 @@ export function sdfSource(batchSize: number): string {
     chain.push(`  d = min(d, sdSeg(w, p${i}a, p${i}b));`);
   }
 
+  const grain = brush === "charcoal";
+
   return `uniform float2 size;
 uniform float2 worldMin;
 uniform float2 worldSpan;
 uniform float halfWidth;
 uniform float feather;
 uniform float3 ink;
-${declarations.join("\n")}
+${grain ? GRAIN_UNIFORMS : ""}${declarations.join("\n")}
 
 float sdSeg(float2 p, float2 a, float2 b) {
   float2 pa = p - a;
@@ -322,7 +364,7 @@ float sdSeg(float2 p, float2 a, float2 b) {
   float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
   return length(pa - ba * h);
 }
-
+${grain ? NOISE_FUNCTIONS : ""}
 half4 main(float2 coord) {
   float2 w = worldMin + (coord / size) * worldSpan;
 
@@ -330,12 +372,74 @@ half4 main(float2 coord) {
 ${chain.join("\n")}
 
   float e = max(feather, 0.0001);
-  float a = 1.0 - smoothstep(halfWidth - e, halfWidth + e, d);
+${grain ? CHARCOAL_BODY : LINER_BODY}
 
   return half4(ink.x * a, ink.y * a, ink.z * a, a);
 }
 `;
 }
+
+const GRAIN_UNIFORMS = `uniform float grainScale;
+uniform float grainDepth;
+uniform float edgeRoughness;
+`;
+
+/**
+ * Value noise and a two-octave fBm, in world space.
+ *
+ * **Two octaves rather than the usual four or five, and that is a cost decision.** All of this runs
+ * once per pixel *after* the distance chain rather than inside it, so it is paid once instead of
+ * `batchSize` times — but per-pixel cost is already what limits this renderer, so octave count is
+ * the first place grain would get expensive. Two is enough for paper tooth: a coarse octave for
+ * patchy density and a fine one for the grit.
+ *
+ * `hash21` is the standard integer-lattice hash. It needs no state and no texture, which is the
+ * entire requirement — see `SdfGrain` for why a texture is not an option.
+ */
+const NOISE_FUNCTIONS = `
+float hash21(float2 p) {
+  float3 p3 = fract(float3(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float vnoise(float2 p) {
+  float2 i = floor(p);
+  float2 f = fract(p);
+  // Smoothstep interpolation, so the field has no visible lattice creases. A linear blend shows
+  // the grid as diagonal seams, which on a map reads as a rendering fault rather than as paper.
+  float2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash21(i), hash21(i + float2(1.0, 0.0)), u.x),
+    mix(hash21(i + float2(0.0, 1.0)), hash21(i + float2(1.0, 1.0)), u.x),
+    u.y);
+}
+
+float fbm2(float2 p) {
+  return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.17 + 11.3);
+}
+`;
+
+const LINER_BODY = `  float a = 1.0 - smoothstep(halfWidth - e, halfWidth + e, d);`;
+
+/**
+ * Charcoal: displace the threshold, then mottle the density.
+ *
+ * The order matters and only one of these is optional. Displacing the *threshold* breaks the
+ * silhouette up, so the outline skips the way a stick does over paper. Multiplying the result by a
+ * second field then varies how heavily ink sits inside it. Doing only the second gives a
+ * clean-edged shape with a dirty middle, which reads as a textured sticker rather than a drawn mark.
+ *
+ * Both fields are keyed to **world** position, so the grain belongs to the map and not to the view.
+ * It must not swim when the GM pans — the same requirement DESIGN.md §6 places on the wobble, and
+ * for the same reason: texture that moves with the camera makes the map appear to breathe.
+ *
+ * The second field is offset and rescaled so the two do not correlate. At matching frequencies the
+ * mottle would line up with the edge breaks and beat against them visibly.
+ */
+const CHARCOAL_BODY = `  float bump = (fbm2(w / grainScale) - 0.5) * edgeRoughness * halfWidth;
+  float a = 1.0 - smoothstep(halfWidth - e + bump, halfWidth + e + bump, d);
+  a *= mix(1.0 - grainDepth, 1.0, fbm2(w / grainScale * 2.7 + 31.7));`;
 
 /** `#rrggbb` to linear 0–1 components, for the `ink` uniform. Falls back to black on nonsense. */
 export function parseHexColor(hex: string): { x: number; y: number; z: number } {

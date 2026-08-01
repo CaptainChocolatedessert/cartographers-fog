@@ -322,6 +322,115 @@ describe("sdfSource", () => {
   });
 });
 
+describe("brushes", () => {
+  const pieces = [piece(0, 0, 50, 0), piece(50, 0, 50, 50)];
+  const bounds = batchBounds(pieces, 8);
+  const grainy: SdfStyle = {
+    ...STYLE,
+    grain: { scale: 12, depth: 0.4, roughness: 0.7 },
+  };
+
+  /** Every `uniform <type> <name>;` the source declares, minus the built-in `size`. */
+  function declared(source: string): Set<string> {
+    const names = new Set<string>();
+    for (const match of source.matchAll(/^uniform\s+\w+\s+(\w+);/gm)) {
+      if (match[1] !== "size") names.add(match[1]!);
+    }
+    return names;
+  }
+
+  it.each([
+    ["liner", STYLE],
+    ["charcoal", grainy],
+  ] as const)(
+    "%s supplies exactly the uniforms its source declares",
+    (brush, style) => {
+      // Bidirectional on purpose, because both mismatches fail *silently*: a uniform the shader
+      // never declares is ignored, and one declared but never supplied leaves the effect drawing
+      // nothing. Neither throws, so nothing but a test catches them.
+      const supplied = new Set(
+        buildUniforms(pieces, bounds, style, 4).map((u) => u.name),
+      );
+
+      expect(supplied).toEqual(declared(sdfSource(4, brush)));
+    },
+  );
+
+  it("gives charcoal grain uniforms and the liner none", () => {
+    const charcoal = declared(sdfSource(4, "charcoal"));
+    const liner = declared(sdfSource(4, "liner"));
+
+    for (const name of ["grainScale", "grainDepth", "edgeRoughness"]) {
+      expect(charcoal.has(name)).toBe(true);
+      expect(liner.has(name)).toBe(false);
+    }
+  });
+
+  it("keeps the noise entirely out of the liner", () => {
+    // Not tidiness — per-pixel cost is what limits this renderer, so the brush without grain must
+    // not pay for the brush with it. Dead code a compiler *might* strip is not good enough.
+    const liner = sdfSource(4, "liner");
+
+    expect(liner).not.toContain("fbm2");
+    expect(liner).not.toContain("hash21");
+    expect(sdfSource(4, "charcoal")).toContain("fbm2");
+  });
+
+  it("runs the grain once per pixel, not once per slot", () => {
+    // The whole cost argument. Noise inside the unrolled chain would be paid `batchSize` times;
+    // after it, once. A single `fbm2` call site per field is what keeps charcoal affordable.
+    // Sliced to the unrolled chain itself — between the distance seed and the alpha ramp. Slicing
+    // from the top of the file instead catches `fbm2`'s own definition, which proves nothing.
+    const source = sdfSource(32, "charcoal");
+    const chain = source.slice(
+      source.indexOf("float d = 1000000.0;"),
+      source.indexOf("float e = max(feather"),
+    );
+
+    expect(chain).toContain("sdSeg(w, p31a, p31b)");
+    expect(chain).not.toContain("fbm2(");
+  });
+
+  it("defaults to the liner when no brush is named", () => {
+    expect(sdfSource(8)).toBe(sdfSource(8, "liner"));
+  });
+
+  it("keys the grain to world position, so it cannot swim under panning", () => {
+    // DESIGN.md §6 forbids a texture that moves with the view — it makes the map appear to
+    // breathe. `w` is world space; `coord` is not.
+    const charcoal = sdfSource(4, "charcoal");
+
+    expect(charcoal).toContain("fbm2(w / grainScale)");
+    expect(charcoal).not.toMatch(/fbm2\(\s*coord/);
+  });
+
+  it("breaks the silhouette rather than only dirtying the middle", () => {
+    // Displacing the threshold is what reads as a dry medium. Multiplying alpha alone gives a
+    // clean-edged shape with a grubby interior, which looks like a textured sticker.
+    expect(sdfSource(4, "charcoal")).toContain(
+      "smoothstep(halfWidth - e + bump, halfWidth + e + bump, d)",
+    );
+  });
+
+  it("is identical for the same brush and batch size", () => {
+    // One source compiled once per brush. If this varied, every batch would compile its own.
+    expect(sdfSource(8, "charcoal")).toBe(sdfSource(8, "charcoal"));
+    expect(sdfSource(8, "charcoal")).not.toBe(sdfSource(8, "liner"));
+  });
+
+  it("guards a zero grain scale, which the shader divides by", () => {
+    const zeroed = buildUniforms(
+      pieces,
+      bounds,
+      { ...grainy, grain: { scale: 0, depth: 0.4, roughness: 0.7 } },
+      4,
+    );
+    const scale = zeroed.find((u) => u.name === "grainScale")!.value as number;
+
+    expect(scale).not.toBe(0);
+  });
+});
+
 describe("parseHexColor", () => {
   it("converts the shipped sepia to 0–1 components", () => {
     const ink = parseHexColor("#603F21");

@@ -110,24 +110,51 @@ export interface Appearance {
    * a redraw. That is deliberate, and it is what makes the two directly comparable.
    */
   readonly renderer: Renderer;
-  /**
-   * How far the ink fades out at a stroke's edge, as a fraction of its half-width. **Shader
-   * renderer only** — a `Path` has a hard silhouette at every setting, which is the whole reason
-   * the shader renderer exists.
-   *
-   * Zero is a hard edge, and reproduces what a `Path` looks like. At one the ramp runs from the
-   * centreline out to twice the half-width, so the stroke has no solid core left and reads as a
-   * smudge. The useful range is well below that.
-   *
-   * A uniform, so this is a redraw — deliberately absent from `invalidatesTrace`. It is the one
-   * genuinely new control the shader route introduces, and the thing most worth tuning by eye.
-   */
-  readonly featherFraction: number;
+  /** Which brush the shader renderer draws with. Ignored by the `strokes` renderer. */
+  readonly brush: BrushId;
+  /** Every brush's settings, kept independently so switching brushes loses no tuning. */
+  readonly brushes: Readonly<Record<BrushId, BrushSettings>>;
 }
 
 export type Renderer = "strokes" | "shader";
 
 const RENDERERS: readonly Renderer[] = ["strokes", "shader"];
+
+/**
+ * Which brush the shader renderer draws with.
+ *
+ * "Brush" in the drawing-app sense — the generic for a mark-making tool, which is why a nib pen and
+ * a pencil will sit under it perfectly comfortably when they arrive.
+ *
+ * `liner` is the clean soft-edged mark this renderer shipped with, named rather than left implicit
+ * so that selecting Brushes cannot lose the appearance already judged good in a room. `charcoal`
+ * adds procedural grain — see `sdf.ts`, `SdfGrain`, including why it must be computed rather than
+ * sampled from a texture.
+ */
+export type BrushId = "liner" | "charcoal";
+
+export const BRUSHES: readonly BrushId[] = ["liner", "charcoal"];
+
+/**
+ * One brush's own settings, **stored per brush**.
+ *
+ * Every brush carries the whole shape even where it ignores fields — `liner` has no use for grain.
+ * A uniform record is far cheaper to validate and migrate than a discriminated union, and the unused
+ * values cost three numbers.
+ *
+ * Independent per brush on purpose: tuning charcoal's roughness must not disturb the liner's edge,
+ * so switching back and forth compares two *tuned* looks rather than one tuned and one trampled.
+ */
+export interface BrushSettings {
+  /** Fade band as a fraction of the half-width. Shared meaning across brushes. */
+  readonly featherFraction: number;
+  /** Grain cell size, in grid squares — so paper tooth keeps its scale on any map. */
+  readonly grainScaleSquares: number;
+  /** How much grain eats into density, 0–1. */
+  readonly grainDepth: number;
+  /** How ragged the silhouette is, as a fraction of the half-width. */
+  readonly edgeRoughness: number;
+}
 
 /**
  * The values judged in a room — ink and geometry on 2026-07-28, the renderer on 2026-08-01.
@@ -156,10 +183,32 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // switches to soft edges on its next reload. That is the intent, not a side effect — a room that
   // wants the old look can pick Lines in the panel, and the choice then persists.
   renderer: "shader",
-  // A third of the half-width — the value the shader probe was judged at by eye, not a measured
-  // optimum. It has no effect under the default `strokes` renderer, so it changes nothing for an
-  // existing table.
-  featherFraction: 1 / 3,
+  // The clean soft edge that was judged in a room. Charcoal is new and unjudged, so it must not be
+  // the one a room lands on by default.
+  brush: "liner",
+  brushes: {
+    // Feather 1/3 is the value the shader was judged at by eye. Grain is irrelevant here and set to
+    // zero so that a `liner` reading these fields by accident would draw the judged look anyway.
+    liner: {
+      featherFraction: 1 / 3,
+      grainScaleSquares: 0.05,
+      grainDepth: 0,
+      edgeRoughness: 0,
+    },
+    // **Tuned by eye in a room and judged good** (user, 2026-08-01) — not a starting guess. Changing
+    // these changes what every table using charcoal sees on its next reload.
+    //
+    // Note the grain is coarser than the first guess (0.09 squares against 0.05) and the tooth
+    // heavier. Worth knowing which way the tuning went: the medium reads better when the grain is
+    // an appreciable fraction of the stroke width rather than far below it. The stroke ships at a
+    // twelfth of a square, so grain at ~0.09 is roughly the width of the mark itself.
+    charcoal: {
+      featherFraction: 0.5,
+      grainScaleSquares: 0.09,
+      grainDepth: 0.6,
+      edgeRoughness: 0.85,
+    },
+  },
 };
 
 /**
@@ -171,6 +220,22 @@ export const DEFAULT_APPEARANCE: Appearance = {
  * and the alternative is guessing where "too soft" is before anyone has looked at it.
  */
 export const MAX_FEATHER_FRACTION = 1;
+
+/**
+ * Grain bounds.
+ *
+ * The scale floor is where grain stops being grain. Below roughly a hundredth of a square the cells
+ * are finer than a screen pixel at ordinary zoom, so the noise aliases into a flat grey haze — the
+ * same sampling failure the wobble period has, and it looks like a dirty screen rather than paper.
+ * The ceiling is about a third of a square, past which cells are larger than the linework is long
+ * and the mark reads as randomly blotched rather than textured.
+ *
+ * `edgeRoughness` may exceed the feather because it displaces the threshold rather than widening
+ * the ramp: at 1 the silhouette wanders by a full half-width, which is a heavy, crumbling stick.
+ */
+export const MIN_GRAIN_SCALE_SQUARES = 0.01;
+export const MAX_GRAIN_SCALE_SQUARES = 0.3;
+export const MAX_EDGE_ROUGHNESS = 1;
 
 /**
  * Width bounds, in grid squares.
@@ -281,13 +346,69 @@ export function fromRoomMetadata(
       DEFAULT_APPEARANCE.pencilScatterSquares,
     ),
     renderer: readRenderer(stored.renderer),
-    featherFraction: readClamped(
-      stored.featherFraction,
-      0,
-      MAX_FEATHER_FRACTION,
-      DEFAULT_APPEARANCE.featherFraction,
-    ),
+    brush: readBrush(stored.brush),
+    brushes: readBrushes(stored),
   };
+}
+
+function readBrush(value: unknown): BrushId {
+  return typeof value === "string" && (BRUSHES as readonly string[]).includes(value)
+    ? (value as BrushId)
+    : DEFAULT_APPEARANCE.brush;
+}
+
+/**
+ * Read every brush's settings, falling back per brush and per field.
+ *
+ * @param stored the whole appearance object, not just its `brushes` — because the *legacy*
+ * top-level `featherFraction` has to be reachable. That key was the liner's edge before brushes
+ * existed, so a room that tuned it keeps that value rather than being silently reset to the
+ * default. Same migration shape as the wobble boolean before it: two lines, and it means a room
+ * written by the previous build still means what it meant.
+ */
+function readBrushes(
+  stored: Record<string, unknown>,
+): Record<BrushId, BrushSettings> {
+  const raw = stored.brushes;
+  const byBrush = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const legacyFeather = stored.featherFraction;
+
+  const out = {} as Record<BrushId, BrushSettings>;
+  for (const id of BRUSHES) {
+    const entry = byBrush[id];
+    const fields = (
+      typeof entry === "object" && entry !== null ? entry : {}
+    ) as Record<string, unknown>;
+    const fallback = DEFAULT_APPEARANCE.brushes[id];
+
+    out[id] = {
+      featherFraction: readClamped(
+        // The legacy key seeds the liner only. It described the one edge that existed, and
+        // applying it to charcoal too would import a value chosen for a different medium.
+        fields.featherFraction ?? (id === "liner" ? legacyFeather : undefined),
+        0,
+        MAX_FEATHER_FRACTION,
+        fallback.featherFraction,
+      ),
+      grainScaleSquares: readClamped(
+        fields.grainScaleSquares,
+        MIN_GRAIN_SCALE_SQUARES,
+        MAX_GRAIN_SCALE_SQUARES,
+        fallback.grainScaleSquares,
+      ),
+      grainDepth: readClamped(fields.grainDepth, 0, 1, fallback.grainDepth),
+      edgeRoughness: readClamped(
+        fields.edgeRoughness,
+        0,
+        MAX_EDGE_ROUGHNESS,
+        fallback.edgeRoughness,
+      ),
+    };
+  }
+  return out;
 }
 
 /**
@@ -384,8 +505,20 @@ export function differs(before: Appearance, after: Appearance): boolean {
     // In `differs` but pointedly not in `invalidatesTrace` — both renderers consume the same
     // wobbled geometry, so switching costs a redraw and nothing more.
     before.renderer !== after.renderer ||
-    // Also a redraw, and for the same kind of reason: it travels as a uniform on effects that are
-    // rebuilt anyway, so it never touches the trace.
-    before.featherFraction !== after.featherFraction
+    before.brush !== after.brush ||
+    // Nested, so a shallow compare would miss every brush slider and they would appear dead. All
+    // brushes are compared rather than just the selected one: the panel writes whichever brush the
+    // GM is editing, and a change that `differs` does not see is a change the tracker never
+    // redraws for.
+    BRUSHES.some((id) => brushDiffers(before.brushes[id], after.brushes[id]))
+  );
+}
+
+function brushDiffers(before: BrushSettings, after: BrushSettings): boolean {
+  return (
+    before.featherFraction !== after.featherFraction ||
+    before.grainScaleSquares !== after.grainScaleSquares ||
+    before.grainDepth !== after.grainDepth ||
+    before.edgeRoughness !== after.edgeRoughness
   );
 }
