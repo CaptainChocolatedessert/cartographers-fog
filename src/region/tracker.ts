@@ -481,6 +481,17 @@ async function flushTracks(lightIds: string[]): Promise<void> {
       const light = snapshot.lights.find((candidate) => candidate.id === lightId);
       if (!light) continue;
 
+      // **Primary only, and this is the second place the rule has to be applied.** The watcher
+      // decides what is *currently* visible; this replays a light's recorded path so a drag
+      // discovers the corridor it crossed rather than only its endpoints. Both write the region,
+      // so a light type honoured in one and ignored in the other produces exactly the bug this
+      // fixed: rooms lit by a fixture stopped being called visible, kept being called discovered,
+      // and so began sketching themselves in the moment the suppression lifted (user, 2026-08-02).
+      //
+      // A fixture does not move, so it has no path worth replaying; what the party can see of one
+      // arrives through the snapshot below.
+      if (light.lightType !== "PRIMARY") continue;
+
       const cellsBefore = countSet(discovered);
       let longestStep = 0;
       let longestStepMs = 0;
@@ -503,6 +514,10 @@ async function flushTracks(lightIds: string[]): Promise<void> {
 
         const polygon = computeVisibilityPolygon(point.at, snapshot.segments, {
           radius: light.attenuationRadius,
+          // Cone honoured here too, for the same reason the type is: two sweeps that disagree
+          // about a light's shape write two different regions.
+          coneAngle: (light.outerAngle * Math.PI) / 180,
+          facing: (light.rotation * Math.PI) / 180,
         });
         if (polygon.length >= 3) {
           rasterizePolygon(discovered, polygon);
@@ -531,6 +546,22 @@ async function flushTracks(lightIds: string[]): Promise<void> {
           // which covers only the MAP images. Say where they were rather than leaving a guess.
           (gained === 0 && lastPolygon ? ` [polygon ${describeReach(lastPolygon)}]` : ""),
       );
+    }
+
+    // What the party can see of a *fixture* — a brazier, anything the watcher admitted only where
+    // line of sight reaches it — folded in from the snapshot rather than swept from a path.
+    //
+    // Without this, skipping non-primary lights above would swap one wrong answer for another:
+    // walk through a lit hall and you would see all of it but remember only what your own torch
+    // touched, leaving permanent blank patches in ground the party plainly explored. §4 is explicit
+    // that under-reporting is the worse error, so the fix for over-reporting must not land there.
+    //
+    // These polygons are already correct — clipped to line of sight by the watcher — so they are
+    // rasterised as they stand. A fixture does not move, so sampling only at flush time loses
+    // nothing that lingering another moment will not recover.
+    for (const view of snapshot.views) {
+      if (view.light.lightType === "PRIMARY") continue;
+      if (view.polygon.length >= 3) rasterizePolygon(discovered, view.polygon);
     }
 
     if (notes.length > 0) {

@@ -177,6 +177,7 @@ export interface StarPolygon {
 export function intersectStarPolygons(
   first: StarPolygon,
   second: StarPolygon,
+  minArea = MIN_PIECE_AREA,
 ): Vector2[][] {
   if (first.polygon.length < 3 || second.polygon.length < 3) return [];
 
@@ -195,7 +196,11 @@ export function intersectStarPolygons(
     for (let i = 0; i < secondFan.length; i++) {
       if (!boundsOverlap(bounds, secondBounds[i]!)) continue;
       const piece = clipToConvex(triangle, secondFan[i]!);
-      if (piece.length >= 3 && area(piece) > MIN_PIECE_AREA) {
+      // Slivers are dropped rather than kept. A fan intersection generates a great many of them
+      // along the seams between triangles, and they cost as much to carry as a real piece — the
+      // parchment stencil started dropping cut-outs wholesale under their weight. Discarding is
+      // also the safe direction: less revealed, never more.
+      if (piece.length >= 3 && area(piece) > minArea) {
         pieces.push(piece);
       }
     }

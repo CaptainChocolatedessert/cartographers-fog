@@ -30,6 +30,7 @@ import { devLog } from "../devlog";
 import { computeVisibilityPolygon } from "./visibility";
 import { wallsToSegments } from "./walls";
 import { intersectStarPolygons } from "../geometry/starClip";
+import { pointInPolygon } from "../geometry/polygon";
 import { simplifyPolyline } from "../trace/simplify";
 import type { Segment } from "../geometry/segment";
 import type { Vector2 } from "../geometry/vector";
@@ -206,6 +207,28 @@ async function recompute(): Promise<void> {
 const CLIP_TOLERANCE = 4;
 
 /**
+ * Smallest intersection piece worth keeping, in square world units.
+ *
+ * A fan intersection throws off a great many slivers along the seams between triangles, and each
+ * costs as much to carry as a real piece: the parchment stencil hit its command budget and began
+ * dropping cut-outs wholesale, which shows as mottle over ground the party can plainly see. About
+ * a tenth of a grid square on the shipped 150-unit grid — far below anything visible, and dropping
+ * is the safe direction anyway.
+ */
+const MIN_PIECE_AREA = 225;
+
+/** Average of a convex piece's vertices, which for a convex polygon is strictly interior. */
+function pieceCentroid(piece: readonly Vector2[]): Vector2 {
+  let x = 0;
+  let y = 0;
+  for (const point of piece) {
+    x += point.x;
+    y += point.y;
+  }
+  return { x: x / piece.length, y: y / piece.length };
+}
+
+/**
  * How far a light can *see*, as opposed to how far it lights.
  *
  * Line of sight is not bounded by your own lamp — you can see a lit hall from much further away
@@ -320,12 +343,30 @@ function sweepLights(lights: readonly Light[], segments: Segment[]): LightView[]
           origin: seen.origin,
           polygon: simplifyPolyline(seen.polygon, CLIP_TOLERANCE),
         },
+        MIN_PIECE_AREA,
       );
-      // Each piece stands alone. Two primaries that both see the same brazier will produce
-      // overlapping pieces, which the parchment's even-odd rule turns back into filled patches —
-      // mottle over somewhere the party can see, which is the harmless direction and not worth
-      // a union operation to avoid.
-      for (const piece of pieces) views.push({ light: entry.light, polygon: piece });
+
+      for (const piece of pieces) {
+        // **Checked against the polygons as swept, not as simplified.** Simplification is what
+        // makes the clip affordable, but a *non-convex* polygon can bulge outward when vertices
+        // are dropped — and the line-of-sight polygon is emphatically non-convex. A piece sitting
+        // in a bulge would be a hole in the parchment where the party can see nothing, which is
+        // the one error that reveals a room exists. The convexity argument that makes the pieces
+        // themselves sound does not cover their clip region, so this closes it directly.
+        //
+        // The centroid rather than every vertex: a piece's corners legitimately lie *on* a
+        // boundary, where point-in-polygon promises nothing, and a convex piece's centroid is
+        // squarely inside it.
+        const centroid = pieceCentroid(piece);
+        if (!pointInPolygon(centroid, seen.polygon)) continue;
+        if (!pointInPolygon(centroid, entry.polygon)) continue;
+
+        // Each piece stands alone. Two primaries that both see the same brazier will produce
+        // overlapping pieces, which the parchment's even-odd rule turns back into filled patches —
+        // mottle over somewhere the party can see, which is the harmless direction and not worth
+        // a union operation to avoid.
+        views.push({ light: entry.light, polygon: piece });
+      }
     }
   }
 
