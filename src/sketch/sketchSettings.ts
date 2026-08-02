@@ -28,15 +28,31 @@
 
 import OBR from "@owlbear-rodeo/sdk";
 
+import { readMarginStrokeWidths } from "./wallMargin";
+
 const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
 export const MAP_CHOICE_KEY = `${NAMESPACE}/sketch-map`;
 export const SKETCH_ENABLED_KEY = `${NAMESPACE}/sketch-enabled`;
+export const WALL_MARGIN_KEY = `${NAMESPACE}/wall-margin`;
 
 export interface SketchSettings {
   /** The nominated map image's id, or `undefined` if the GM has not chosen one. */
   readonly mapId: string | undefined;
   /** Whether to trace and draw at all. Absent means yes — a scene that was never told. */
   readonly enabled: boolean;
+  /**
+   * The wall margin, as a multiple of the map's measured ink width. See `wallMargin.ts`.
+   *
+   * **Per scene rather than per room, because the right value is a property of the map.** It
+   * depends on how wide that map's linework is relative to what the estimator reports, and on how
+   * much space its rooms have around them — a margin that is safe on an airy dungeon can reach
+   * across a thin wall on a cramped one and show a room nobody has entered. A room-wide value
+   * would be wrong for every scene but the one it was tuned on.
+   *
+   * Stored as the *multiplier*, not as a distance, so it keeps the per-map adaptation the whole
+   * design rests on: the same setting gives a wider margin on a map with heavier ink.
+   */
+  readonly marginStrokeWidths: number;
 }
 
 export async function readSketchSettings(): Promise<SketchSettings> {
@@ -79,7 +95,19 @@ export async function clearSketch(): Promise<void> {
 }
 
 /**
- * Remove both keys entirely, as though this extension had never touched the scene.
+ * Set the wall margin for this scene.
+ *
+ * A lone key rather than a read-modify-write of the whole record: `setMetadata` merges at the top
+ * level, so writing this one leaves the map choice and the off switch exactly as they were. That
+ * matters more than usual here — the panel writes this on a slider pause, and a GM who nominated a
+ * map a moment earlier must not have it undone by a stale copy in a debounced write.
+ */
+export async function writeWallMargin(strokeWidths: number): Promise<void> {
+  await OBR.scene.setMetadata({ [WALL_MARGIN_KEY]: strokeWidths });
+}
+
+/**
+ * Remove every key entirely, as though this extension had never touched the scene.
  *
  * **Not the same as `clearSketch`, and the difference is the whole reason this exists.** That
  * writes an explicit `sketch-enabled: false`, because suppression is a decision that has to be
@@ -92,6 +120,10 @@ export async function eraseSketchSettings(): Promise<void> {
   await OBR.scene.setMetadata({
     [MAP_CHOICE_KEY]: undefined,
     [SKETCH_ENABLED_KEY]: undefined,
+    // Cleared here but deliberately *not* by `clearSketch`. Removing the sketch is a judgment
+    // about whether to draw; the margin is tuning that took a GM some effort, and throwing it away
+    // as a side effect of a button about something else would be a small, annoying surprise.
+    [WALL_MARGIN_KEY]: undefined,
   });
 }
 
@@ -116,10 +148,14 @@ export function fromMetadata(
 ): SketchSettings {
   const rawId = metadata[MAP_CHOICE_KEY];
   const rawEnabled = metadata[SKETCH_ENABLED_KEY];
+  const rawMargin = metadata[WALL_MARGIN_KEY];
 
   return {
     mapId: typeof rawId === "string" && rawId.length > 0 ? rawId : undefined,
     // Default on: a scene predating this setting should sketch, not sit blank.
     enabled: typeof rawEnabled === "boolean" ? rawEnabled : true,
+    // Validated next to the bounds it clamps against, and testable there — see `wallMargin.ts`.
+    // A scene predating this key takes the judged default, so nothing currently drawing changes.
+    marginStrokeWidths: readMarginStrokeWidths(rawMargin),
   };
 }

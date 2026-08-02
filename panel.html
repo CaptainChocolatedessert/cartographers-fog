@@ -242,6 +242,29 @@
         <p id="mapsEmpty" hidden>No MAP-layer image in this scene.</p>
 
         <hr />
+        <!--
+          Per scene, not per room: the right value depends on this map's linework and on how much
+          space its rooms have around them. Lives in Setup rather than Appearance because it is not
+          an aesthetic choice — it decides what counts as remembered near a wall.
+        -->
+        <h2>Wall margin</h2>
+        <p class="hint">
+          How far either side of a line still counts as the same place. Without it, wall linework
+          appears in patches, because a wall is exactly where "seen" and "not seen" meet.
+        </p>
+        <div class="row">
+          <label for="wallMargin">Margin</label>
+          <!--
+            Hundredths of the map's measured ink width, so the setting adapts per map: the same
+            value gives a wider margin on a map drawn with a heavier pen. 150 = the judged 1.5, and
+            a step of 5 lands on it exactly.
+          -->
+          <input type="range" id="wallMargin" min="0" max="300" step="5" value="150" />
+          <output id="wallMarginValue">1.50×</output>
+        </div>
+        <p id="wallMarginNote" class="hint"></p>
+
+        <hr />
         <h2>Explored area</h2>
         <div class="actions">
           <button id="revealAll">Mark whole map explored</button>

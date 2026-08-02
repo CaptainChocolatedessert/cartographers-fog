@@ -48,6 +48,12 @@ GM-only — a player who opens it is told the settings are the GM's. Three tabs:
 - **Map to sketch** — every MAP-layer image in the scene, listed with its size and lock state.
   Only needed when a scene holds more than one, but unlike the context menu it works on a locked
   map, which is the usual state of a scene's map.
+- **Wall margin** — how far either side of a line still counts as the same place. Wall linework is
+  the awkward case for the sketch: a wall is exactly where "seen" and "not seen" meet, so without
+  a margin it appears in patches along a single wall. The setting is a multiple of the map's own
+  measured ink width, so it adapts to how heavily the map is drawn, and it is per scene because
+  the right value depends on the map. Turn it down on a cramped map, where a generous margin can
+  reach across a thin wall and show a room nobody has entered; zero switches it off entirely.
 - **Mark whole map explored** — treat the entire map as already walked. Intended for judging the
   sketch, since otherwise the look can only be assessed on ground the party has covered. It does
   not clear Owlbear's own fog, which this extension does not control.

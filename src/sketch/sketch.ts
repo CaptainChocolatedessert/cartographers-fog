@@ -21,7 +21,12 @@ import { readAppearance } from "./appearanceStore";
 import { loadMapRaster, resolveSketchMap } from "./mapImage";
 import { selectSketchSegments } from "./mask";
 import { readSketchSettings } from "./sketchSettings";
-import { marginSource, wallMargin } from "./wallMargin";
+import {
+  DEFAULT_MARGIN_STROKE_WIDTHS,
+  marginSource,
+  wallMargin,
+  type WallMarginInputs,
+} from "./wallMargin";
 import { clearStrokes, renderStrokes } from "./strokes";
 import { clearShaderStrokes, renderShaderStrokes } from "./shaderStrokes";
 import { pencilPasses } from "./pencil";
@@ -54,8 +59,16 @@ interface TracedMap {
    */
   readonly passes: readonly (readonly TracedSegment[])[];
   readonly dpi: number;
-  /** How far either side of a stroke counts as the same place — see `wallMargin.ts`. */
-  readonly margin: number;
+  /**
+   * What the margin is derived *from*, rather than the margin itself — see `wallMargin.ts`.
+   *
+   * Keeping the ingredients is what makes the scene's margin setting a redraw instead of a
+   * re-trace. All three are properties of the map and the trace, so they change only when the map
+   * does; the multiplier applied to them is a GM's setting and can change at any moment. Storing
+   * the finished distance would bake the two together and force a few hundred milliseconds of
+   * re-tracing on every nudge of a slider.
+   */
+  readonly marginInputs: WallMarginInputs;
 }
 
 let traced: TracedMap | null = null;
@@ -73,6 +86,21 @@ let appearance: Appearance = DEFAULT_APPEARANCE;
 /** Adopt a new look. Callers must re-render; whether they must also re-trace is their decision. */
 export function setAppearance(next: Appearance): void {
   appearance = next;
+}
+
+/**
+ * The scene's wall-margin multiplier, cached for the same reason the appearance is: it is read on
+ * every redraw, and redraws run several times a second while a token moves.
+ *
+ * Seeded with the judged default so a render arriving before the first metadata read uses the
+ * shipped margin rather than none — which would show as wall linework going patchy for a moment on
+ * a freshly-opened scene, the exact artefact the margin exists to prevent.
+ */
+let marginStrokeWidths = DEFAULT_MARGIN_STROKE_WIDTHS;
+
+/** Adopt a new margin setting. A redraw applies it; no re-trace is needed. */
+export function setMarginStrokeWidths(next: number): void {
+  marginStrokeWidths = next;
 }
 
 /**
@@ -168,16 +196,24 @@ export async function prepareSketch(): Promise<boolean> {
       mapExtent:
         Math.min(raster.pixels.width, raster.pixels.height) * unitsPerPixel,
     };
-    const margin = wallMargin(marginInputs);
+    const margin = wallMargin(marginInputs, marginStrokeWidths);
 
-    traced = { mapId: raster.mapId, url: raster.url, segments, passes, dpi, margin };
+    traced = {
+      mapId: raster.mapId,
+      url: raster.url,
+      segments,
+      passes,
+      dpi,
+      marginInputs,
+    };
 
     devLog(
       "info",
       `sketch: ink ${result.stats.strokeWidthPx.toFixed(1)}px wide ` +
         `(${result.stats.inkPixels} px over ${result.stats.skeletonLength.toFixed(0)}px of ` +
         `skeleton) = ${strokeWidthWorld.toFixed(1)} world units, ` +
-        `wall margin ${margin.toFixed(1)} from ${marginSource(marginInputs)}`,
+        `wall margin ${margin.toFixed(1)} from ${marginSource(marginInputs)} ` +
+        `(×${marginStrokeWidths} stroke widths)`,
     );
 
     // `inkFraction` and `fieldMax` are reported for the reason DESIGN.md §2 gives: both failure
@@ -227,11 +263,13 @@ export async function renderSketch(
 ): Promise<SketchRender | null> {
   if (!traced) return null;
 
+  // Derived here rather than at trace time, so the scene's margin setting costs a redraw. It is a
+  // multiply and a clamp against numbers already in hand — nothing next to the masking it feeds.
   const selection = selectSketchSegments(
     traced.segments,
     discovered,
     visible,
-    traced.margin,
+    wallMargin(traced.marginInputs, marginStrokeWidths),
   );
 
   // One masking decision, applied to every pass by index. Masking each pass on its own midpoint

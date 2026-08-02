@@ -50,6 +50,7 @@ import {
   renderSketch,
   resetSketch,
   setAppearance,
+  setMarginStrokeWidths,
   sketchSegmentCount,
 } from "../sketch/sketch";
 import {
@@ -268,15 +269,26 @@ async function initialiseForScene(): Promise<void> {
   // Gated on the settings actually changing: this subscription shares `scene.onMetadataChange`
   // with the region writes, which land several times a minute during play.
   sketchSettings = await readSketchSettings();
+  setMarginStrokeWidths(sketchSettings.marginStrokeWidths);
   unsubscribeMapChoice = onSketchSettingsChange((settings) => {
-    if (
-      settings.mapId === sketchSettings?.mapId &&
-      settings.enabled === sketchSettings?.enabled
-    ) {
+    const retrace =
+      settings.mapId !== sketchSettings?.mapId ||
+      settings.enabled !== sketchSettings?.enabled;
+    const marginChanged =
+      settings.marginStrokeWidths !== sketchSettings?.marginStrokeWidths;
+    if (!retrace && !marginChanged) return;
+
+    sketchSettings = settings;
+    if (retrace) {
+      // A re-trace re-derives the margin anyway, so there is nothing to apply separately.
+      void buildSketch();
       return;
     }
-    sketchSettings = settings;
-    void buildSketch();
+    // The same split the appearance subscription makes, for the same reason: the margin multiplies
+    // numbers the trace already produced, so applying it is a redraw. Re-tracing on every nudge of
+    // the slider would cost a few hundred milliseconds a time and make the control unusable.
+    setMarginStrokeWidths(settings.marginStrokeWidths);
+    void render();
   });
 
   // Appearance is shared through *room* metadata, so this runs on every client — the panel is

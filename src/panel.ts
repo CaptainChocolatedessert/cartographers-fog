@@ -54,6 +54,7 @@ import {
   onSketchSettingsChange,
   readSketchSettings,
   writeMapChoice,
+  writeWallMargin,
 } from "./sketch/sketchSettings";
 import { clearRegion, writeRegion } from "./region/store";
 import { buildSceneGrid } from "./region/sceneGrid";
@@ -123,6 +124,9 @@ const nibOnly = element("nibOnly");
 const scatterInput = element<HTMLInputElement>("scatter");
 const scatterValue = element("scatterValue");
 const pencilNote = element("pencilNote");
+const wallMarginInput = element<HTMLInputElement>("wallMargin");
+const wallMarginValue = element("wallMarginValue");
+const wallMarginNote = element("wallMarginNote");
 const playersMayStyleInput = element<HTMLInputElement>("playersMayStyle");
 const gmOnlyAppearance = element("gmOnlyAppearance");
 const tabStrip = document.querySelector<HTMLElement>(".tabs")!;
@@ -422,6 +426,26 @@ const WRITE_DEBOUNCE_MS = 200;
 let pendingChanges: Partial<Appearance> = {};
 let writeTimer: ReturnType<typeof setTimeout> | undefined;
 
+/**
+ * The margin's own debounce, separate from the appearance one because it writes *scene* metadata.
+ *
+ * Sharing a timer would mean a margin change and a colour change coalescing into one pause and
+ * then landing as two writes anyway, against two different stores — no saving, and a suppression
+ * flag that no longer says which store is mid-write.
+ */
+let marginWriteTimer: ReturnType<typeof setTimeout> | undefined;
+
+function queueWallMargin(strokeWidths: number): void {
+  if (marginWriteTimer !== undefined) clearTimeout(marginWriteTimer);
+  marginWriteTimer = setTimeout(() => {
+    marginWriteTimer = undefined;
+    void writeWallMargin(strokeWidths).catch((error) => {
+      devLog("error", "panel: could not save the wall margin", error);
+      say("Could not save the wall margin.");
+    });
+  }, WRITE_DEBOUNCE_MS);
+}
+
 function queueAppearance(changes: Partial<Appearance>): void {
   pendingChanges = { ...pendingChanges, ...changes };
   if (writeTimer !== undefined) clearTimeout(writeTimer);
@@ -547,6 +571,42 @@ async function refreshMaps(): Promise<void> {
     ? settings.mapId
     : undefined;
   renderMaps(maps);
+  showWallMargin(settings.marginStrokeWidths);
+}
+
+/** Hundredths of a stroke width, so the judged 1.5 is reachable on a whole-number slider. */
+const marginHundredthsFor = (strokeWidths: number): number =>
+  Math.round(strokeWidths * 100);
+const marginStrokeWidthsFor = (hundredths: number): number => hundredths / 100;
+
+/**
+ * Reflect the stored margin, unless a write of our own is still pending.
+ *
+ * Same reasoning as the appearance controls: this also runs from `onSketchSettingsChange`, which
+ * fires for *every* scene metadata write including the region's — several a minute during play —
+ * so adopting one mid-drag would yank the slider under the GM's thumb.
+ */
+function showWallMargin(strokeWidths: number): void {
+  if (marginWriteTimer !== undefined) return;
+  const hundredths = marginHundredthsFor(strokeWidths);
+  wallMarginInput.value = String(hundredths);
+  showMarginReadout(hundredths);
+}
+
+function showMarginReadout(hundredths: number): void {
+  const strokeWidths = marginStrokeWidthsFor(hundredths);
+  wallMarginValue.textContent =
+    hundredths === 0 ? "off" : `${strokeWidths.toFixed(2)}×`;
+
+  // Both ends are worth naming, because both look like faults. Zero is the one to explain: the
+  // linework going patchy along a wall is the artefact the margin exists to remove, so a GM who
+  // has slid it to nothing is looking at the expected result rather than a broken trace.
+  wallMarginNote.textContent =
+    hundredths === 0
+      ? "Off. Wall linework will appear in patches — nothing is drawn past what was seen."
+      : strokeWidths > 2
+        ? "Wide. Reaches further past explored ground, which can show a room across a thin wall."
+        : "Multiples of this map's measured ink width, so it adapts to how heavily the map is drawn.";
 }
 
 /**
@@ -915,6 +975,14 @@ async function start(): Promise<void> {
  * hidden, and the split costs one function boundary.
  */
 function installGmControls(): void {
+  wallMarginInput.addEventListener("input", () => {
+    const hundredths = Number(wallMarginInput.value);
+    // Readout now, write on the pause. Every client applies it as a redraw, so the sketch follows
+    // a beat later without the map being traced again.
+    showMarginReadout(hundredths);
+    queueWallMargin(marginStrokeWidthsFor(hundredths));
+  });
+
   revealAllButton.addEventListener("click", () => {
     void (async () => {
       revealAllButton.disabled = true;

@@ -964,6 +964,51 @@ scene means the margin is misconfigured, not that it was unnecessary — the sam
 other diagnostic here: a measurement that cannot distinguish its outcomes will be believed
 anyway.
 
+##### The multiplier is a per-scene setting (2026-08-02)
+
+`MARGIN_STROKE_WIDTHS` is now a default rather than a constant: the Setup tab carries a slider from
+0 to 3, defaulting to the judged 1.5. **Per scene, not per room**, because the right value is a
+property of the map — how heavy its linework is relative to what the estimator reports, and how much
+space its rooms have around them. A room-wide value would be wrong for every scene but the one it
+was tuned on.
+
+**This is the pragmatic answer to both cautions above**, neither of which a better constant could
+fix. The estimator and the multiplier are entangled, so a GM can compensate for a map where the
+measurement misbehaves without anyone touching the estimator; and on a tight map the margin can be
+wound down — or off — in exchange for patchier wall linework, which is the right trade when the
+alternative is showing a room across a thin wall. It does not *solve* either problem. The
+occlusion-gating remedy above is still the real fix for the spoiler case, and this does not remove
+the reason to build it.
+
+**The stored value is the multiplier, not a distance**, so the per-map adaptation survives: the same
+setting yields a wider margin on a map drawn with a heavier pen, which is the whole reason the
+margin is measured from ink rather than from the grid.
+
+Three things worth not re-deriving:
+
+- **Zero has to short-circuit.** A zero multiplier makes the ink term zero, and the fallback below
+  it reads a zero ink term as "the ink could not be measured" and answers with a grid-derived
+  margin. Without an explicit early return, the off end of the control quietly produces a margin on
+  every scene whose grid is set — and it would read as the control doing nothing. A test pins it.
+- **The fallback scales with the setting too**, expressed as a ratio against the default so that at
+  the default it is exactly the 0.1 grid squares that shipped. Otherwise the control appears dead on
+  precisely the traces where the ink was unmeasurable.
+- **It is a redraw, not a re-trace, and that took a small change to earn.** The margin used to be
+  computed at trace time with only the result kept. The trace record now holds the *inputs* — the
+  measured ink width, the dpi and the map extent, all properties of the map — and the multiplier is
+  applied at render time. Baking the two together would have cost a few hundred milliseconds of
+  re-tracing on every nudge of the slider. The tracker routes a margin change to a redraw and a map
+  or enabled change to a re-trace, the same split the appearance subscription makes.
+
+The validator lives in `wallMargin.ts` rather than beside the other scene settings, for two reasons:
+it belongs next to the bounds it clamps against, and the scene-settings module imports the SDK,
+which would make the rule untestable headlessly — the layering constraint this project keeps
+rediscovering.
+
+**Erasing the scene's data clears it; clearing the sketch does not.** Removing the sketch is a
+judgment about whether to draw at all, and discarding a GM's tuning as a side effect of a button
+about something else would be a small, annoying surprise.
+
 ##### Measured on a real walled map (2026-07-31)
 
 Run on "Lair Of The Lamb", 10275x7915 world units — 68.5 grid squares, traced at a 1024 raster:
