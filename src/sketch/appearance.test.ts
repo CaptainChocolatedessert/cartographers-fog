@@ -98,6 +98,10 @@ describe("fromRoomMetadata", () => {
         nib: DEFAULT_APPEARANCE.brushes.nib,
       },
       parchment: DEFAULT_APPEARANCE.parchment,
+      // Absent from the stored object, so a room tuned before this field existed keeps its players
+      // locked out. That is the whole point of the default, and this exhaustive compare is what
+      // would catch it flipping.
+      playersMayStyle: false,
     });
   });
 
@@ -538,5 +542,56 @@ describe("differs", () => {
     expect(
       differs(DEFAULT_APPEARANCE, { ...DEFAULT_APPEARANCE, wobbleSquares: 0 }),
     ).toBe(true);
+  });
+});
+
+describe("playersMayStyle", () => {
+  it("is off by default, and every existing room reads as off", () => {
+    // The load-bearing one. These are *shared* settings, so a room that gains this field on a
+    // deploy must not quietly hand its players the table's look — the change has to wait for a GM
+    // to click the switch. Compare `renderer`, where reaching existing rooms was the whole point.
+    expect(DEFAULT_APPEARANCE.playersMayStyle).toBe(false);
+    expect(fromRoomMetadata({}).playersMayStyle).toBe(false);
+    expect(fromRoomMetadata(wrap({ strokeColor: "#123456" })).playersMayStyle).toBe(
+      false,
+    );
+  });
+
+  it("fails closed on anything that is not exactly true", () => {
+    // Wrongly denying costs a GM one click; wrongly granting changes a table's look under a GM who
+    // never offered it. So the truthy-but-not-true cases have to land shut, not open.
+    const read = (v: unknown) => fromRoomMetadata(wrap({ playersMayStyle: v }));
+
+    expect(read(true).playersMayStyle).toBe(true);
+    expect(read(false).playersMayStyle).toBe(false);
+    expect(read("true").playersMayStyle).toBe(false);
+    expect(read(1).playersMayStyle).toBe(false);
+    expect(read(undefined).playersMayStyle).toBe(false);
+  });
+
+  it("survives a write that does not mention it", () => {
+    // The panel writes partial appearances, and a player granted the tab writes the same shape a
+    // GM does. Since the store merges shallowly over the stored record, a player saving a colour
+    // must not revoke their own access as a side effect.
+    const stored = { playersMayStyle: true, strokeColor: "#111111" };
+    const asWritten = {
+      ...fromRoomMetadata(wrap(stored)),
+      strokeColor: "#222222",
+    };
+
+    expect(asWritten.playersMayStyle).toBe(true);
+    expect(fromRoomMetadata(wrap(asWritten)).playersMayStyle).toBe(true);
+  });
+
+  it("costs neither a redraw nor a re-trace", () => {
+    // It decides who sees a tab. No geometry, no pixels — so a client hearing it flip has nothing
+    // to do, and putting it in `differs` would rebuild the whole sketch on every client because a
+    // GM toggled a permission. Both functions are explicit field lists, so this pins the omission
+    // that someone would otherwise undo out of tidiness.
+    const before = DEFAULT_APPEARANCE;
+    const granted = { ...before, playersMayStyle: true };
+
+    expect(differs(before, granted)).toBe(false);
+    expect(invalidatesTrace(before, granted)).toBe(false);
   });
 });

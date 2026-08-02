@@ -123,6 +123,9 @@ const nibOnly = element("nibOnly");
 const scatterInput = element<HTMLInputElement>("scatter");
 const scatterValue = element("scatterValue");
 const pencilNote = element("pencilNote");
+const playersMayStyleInput = element<HTMLInputElement>("playersMayStyle");
+const gmOnlyAppearance = element("gmOnlyAppearance");
+const tabStrip = document.querySelector<HTMLElement>(".tabs")!;
 const revealAllButton = element<HTMLButtonElement>("revealAll");
 const clearButton = element<HTMLButtonElement>("clear");
 const resetButton = element<HTMLButtonElement>("reset");
@@ -267,6 +270,40 @@ function showRelevantControls(renderer: Renderer, brush: BrushId): void {
   grainOnly.hidden = !brushes || brush !== "charcoal";
   inkOnly.hidden = !brushes || brush !== "ink";
   nibOnly.hidden = !brushes || brush !== "nib";
+}
+
+/**
+ * Decide what this client may see, for a role and a current permission setting.
+ *
+ * Called at startup *and* from `onAppearanceChange`, which is the part that matters: a GM revoking
+ * access mid-session must take the tab away from a player who already has the panel open. The
+ * appearance subscription fires on every client anyway, so this costs nothing and its absence would
+ * read as "I turned it off and they kept fiddling".
+ *
+ * Note this deliberately does **not** sit inside `showAppearance`, which skips its work while a
+ * write is pending so a slider is not yanked mid-drag. Suppressing a *revocation* for that reason
+ * would be exactly wrong — a player fiddling with a slider is precisely the player whose access has
+ * just been withdrawn.
+ *
+ * Players get the Appearance tab and nothing else. Setup and Debug hold the map nomination, the
+ * explored-area reset and the two erase buttons: all either destructive or scene-owning, and none
+ * of them things this switch was offered to hand over.
+ */
+function applyAccess(isGm: boolean, playersMayStyle: boolean): void {
+  const allowed = isGm || playersMayStyle;
+  gmOnly.hidden = !allowed;
+  playerOnly.hidden = allowed;
+  gmOnlyAppearance.hidden = !isGm;
+
+  // One tab needs no tab strip; a lone "Appearance" button is chrome advertising a choice that
+  // isn't there. The panels themselves are switched below rather than by `installTabs`, which never
+  // runs its click handlers for a player.
+  tabStrip.hidden = !isGm;
+  if (isGm) return;
+
+  for (const tab of document.querySelectorAll<HTMLElement>('[role="tabpanel"]')) {
+    tab.hidden = tab.id !== "panelAppearance";
+  }
 }
 
 /**
@@ -415,6 +452,7 @@ function showAppearance(appearance: Appearance): void {
   showRelevantControls(appearance.renderer, appearance.brush);
   showBrushSettings(appearance.brushes[appearance.brush]);
   showParchment(appearance.parchment);
+  playersMayStyleInput.checked = appearance.playersMayStyle;
   colorInput.value = appearance.strokeColor;
   const widthTenths = widthTenthsFor(appearance.strokeWidthSquares);
   widthInput.value = String(widthTenths);
@@ -632,33 +670,57 @@ function installConfirm(
 }
 
 async function start(): Promise<void> {
-  const role = await OBR.player.getRole();
-  if (role !== "GM") {
-    // Hiding controls is a convention, not a permission boundary — DESIGN.md notes the
-    // `Permission` enum does not govern metadata, so this is politeness rather than enforcement.
-    // The writes it guards are read-modify-write for exactly that reason.
-    playerOnly.hidden = false;
-    return;
-  }
-  gmOnly.hidden = false;
+  const isGm = (await OBR.player.getRole()) === "GM";
+  const appearance = await readAppearance();
+
   installTabs();
 
   await OBR.theme.getTheme().then(applyTheme).catch(() => {});
   OBR.theme.onChange(applyTheme);
 
-  showAppearance(await readAppearance());
-  await refreshMaps();
+  showAppearance(appearance);
+  // Hiding controls is a convention, not a permission boundary — DESIGN.md notes the `Permission`
+  // enum does not govern metadata, so a determined player could always write these. The writes are
+  // read-modify-write for exactly that reason, which is also what makes several editors safe.
+  applyAccess(isGm, appearance.playersMayStyle);
 
-  // The scene's map list changes without this page knowing — a map added, deleted, or nominated
-  // from the context menu that still ships.
-  OBR.scene.items.onChange(() => {
-    void refreshMaps();
+  // The appearance controls below are wired for *everyone*, including a player currently locked
+  // out, and only their visibility varies. Installing them lazily on the first grant would mean a
+  // player who is handed the tab mid-session sees live-looking sliders that do nothing until they
+  // reopen the panel. Listeners on hidden controls cost nothing; that bug would not be free.
+  if (isGm) {
+    installGmControls();
+    await refreshMaps();
+
+    // The scene's map list changes without this page knowing — a map added, deleted, or nominated
+    // from the context menu that still ships.
+    OBR.scene.items.onChange(() => {
+      void refreshMaps();
+    });
+    onSketchSettingsChange(() => {
+      void refreshMaps();
+    });
+  }
+
+  // Another client — the GM's other window, or any player who has been handed the tab — may change
+  // the look. Several editors at once is accepted rather than arbitrated (user, 2026-08-02): writes
+  // merge field by field, so two people on *different* controls compose, and two on the same one
+  // means last write wins.
+  onAppearanceChange((next) => {
+    showAppearance(next);
+    applyAccess(isGm, next.playersMayStyle);
   });
-  onSketchSettingsChange(() => {
-    void refreshMaps();
+
+  playersMayStyleInput.addEventListener("change", () => {
+    // Written immediately rather than through `queueAppearance`: a checkbox produces one event, so
+    // there is nothing to coalesce, and the debounce would only delay a grant by 200ms.
+    void writeAppearance({ playersMayStyle: playersMayStyleInput.checked }).catch(
+      (error) => {
+        devLog("error", "panel: could not save the player setting", error);
+        say("Could not save that setting.");
+      },
+    );
   });
-  // Another client — or the GM's other window — may change the look.
-  onAppearanceChange(showAppearance);
 
   colorInput.addEventListener("input", () => {
     queueAppearance({ strokeColor: colorInput.value });
@@ -842,6 +904,17 @@ async function start(): Promise<void> {
     }, 1600);
   });
 
+}
+
+/**
+ * Wire the controls only a GM ever gets: the map picker's siblings, and everything destructive.
+ *
+ * Split from `start()` so a player's client never installs them at all. The buttons sit inside tab
+ * panels a player cannot reach, so leaving them wired would be *currently* harmless — but "hidden
+ * yet live" is the shape of thing that becomes a real hole the moment someone changes what is
+ * hidden, and the split costs one function boundary.
+ */
+function installGmControls(): void {
   revealAllButton.addEventListener("click", () => {
     void (async () => {
       revealAllButton.disabled = true;

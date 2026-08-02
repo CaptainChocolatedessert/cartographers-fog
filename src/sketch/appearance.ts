@@ -116,6 +116,25 @@ export interface Appearance {
   readonly brushes: Readonly<Record<BrushId, BrushSettings>>;
   /** The parchment overlay — mottled tone over everything the party cannot currently see. */
   readonly parchment: ParchmentSettings;
+  /**
+   * Whether players get the Appearance tab as well as the GM. **Off by default.**
+   *
+   * These are *shared* settings, not personal ones, so this hands players the table's look rather
+   * than their own copy of it — a player who moves a slider restyles the sketch for everyone. That
+   * is the intent (user, 2026-08-02): an occasional "have a play with it", not a per-seat
+   * preference. `OBR.player.setMetadata` remains the right home if a personal override is ever
+   * wanted, and nothing here forecloses it.
+   *
+   * **Not a permission boundary, and it never could be.** Any client can write room metadata — the
+   * `Permission` enum governs item operations and says nothing about metadata — so this hides a
+   * tab rather than closing a door. It is the social control it appears to be, not a security one.
+   *
+   * **Deliberately absent from both `differs` and `invalidatesTrace`**: it changes no geometry and
+   * no pixels, so a client that hears it flip has nothing to redraw. Both of those functions are
+   * explicit field lists, so this is achieved by *not* adding it to them — which is easy to undo by
+   * accident when adding the next field. See the note in `differs`.
+   */
+  readonly playersMayStyle: boolean;
 }
 
 /**
@@ -352,6 +371,11 @@ export const DEFAULT_APPEARANCE: Appearance = {
     scaleSquares: 1.5,
     contrast: 0.6,
   },
+  // Off, and this default is the one that must not drift. Every room written before this field
+  // existed reads it as absent and lands here, so an existing table's players gain nothing on the
+  // next reload — the change is invisible until a GM turns it on. Compare `renderer`, where reaching
+  // existing rooms *was* the intent; here it emphatically is not.
+  playersMayStyle: false,
 };
 
 /**
@@ -528,6 +552,10 @@ export function fromRoomMetadata(
     brush: readBrush(stored.brush),
     brushes: readBrushes(stored),
     parchment: readParchment(stored.parchment),
+    // Anything that is not an explicit `true` locks players out. A malformed or half-written value
+    // has to fail closed: the cost of wrongly denying is a GM clicking a switch, and the cost of
+    // wrongly granting is a table's look changing under a GM who never offered it.
+    playersMayStyle: stored.playersMayStyle === true,
   };
 }
 
@@ -740,6 +768,10 @@ export function differs(before: Appearance, after: Appearance): boolean {
     // redraws for.
     BRUSHES.some((id) => brushDiffers(before.brushes[id], after.brushes[id])) ||
     parchmentDiffers(before.parchment, after.parchment)
+    // `playersMayStyle` is deliberately NOT compared here, and this is the place someone would add
+    // it out of tidiness. It decides who sees a tab; it changes no geometry and no pixels, so a
+    // client hearing it flip has nothing to redraw. Adding it would make every client rebuild the
+    // whole sketch because a GM toggled a permission. A test pins the omission.
   );
 }
 

@@ -494,6 +494,27 @@
             <output id="parchmentContrastValue">60%</output>
           </div>
         </div>
+
+        <!--
+          GM-only, and inside the Appearance tab because it governs this tab specifically.
+
+          Hiding it from players is politeness, not enforcement — any client can write room
+          metadata, so this was never a door that could be locked. But showing a player the switch
+          that holds it open would be absurd.
+        -->
+        <div id="gmOnlyAppearance">
+          <hr />
+          <h2>Players</h2>
+          <div class="row">
+            <label for="playersMayStyle">Players can change these</label>
+            <input type="checkbox" id="playersMayStyle" />
+          </div>
+          <p class="hint">
+            These are the table's settings, not each player's own — anyone who changes one changes
+            it for everybody. Players only get this tab; the map, the explored area and the erase
+            buttons stay yours.
+          </p>
+        </div>
       </div>
       <div id="panelDebug" role="tabpanel" aria-label="Debug" hidden>
         <h2>Stored data</h2>

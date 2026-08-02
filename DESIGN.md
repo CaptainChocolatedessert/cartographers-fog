@@ -1999,10 +1999,12 @@ Mechanically it is available. `SceneFogApi` carries only global appearance — `
 
 ### Display options are GM-controlled and ride shared metadata
 
-If the rendering modes above become user-selectable, the controls belong to the GM alone — the
-sketch is a shared table aesthetic, not a per-player preference. That raises the obvious
-question of how a GM's choice reaches player clients that render independently, and the answer
-is that it needs no new machinery: it is the same shared-state mechanism §5 already uses.
+If the rendering modes above become user-selectable, the controls belong to the GM **by default** —
+the sketch is a shared table aesthetic, not a per-player preference. (Amended 2026-08-02: the GM can
+now hand the Appearance tab to players. That does not weaken the sentence above, it relies on it —
+see "Letting players change the look" below.) That raises the obvious question of how a GM's choice
+reaches player clients that render independently, and the answer is that it needs no new machinery:
+it is the same shared-state mechanism §5 already uses.
 
 - `OBR.player.getRole()` returns `"GM" | "PLAYER"` — gate the UI on it.
 - `OBR.room.setMetadata()` writes the settings; `onMetadataChange()` fires on **every** client
@@ -2035,6 +2037,65 @@ Two things not to mistake:
 Worth knowing for later: `OBR.player.setMetadata` is per-player and synced, so a personal
 override on top of the GM's shared style — an accessibility palette, or turning the sketch down
 because it distracts — has a natural home whenever that is wanted. Not needed for v1.
+
+#### Letting players change the look (2026-08-02)
+
+A GM switch — off by default — that shows players the Appearance tab. Setup and Debug stay GM-only:
+between them they hold the map nomination, the explored-area reset and the two erase buttons, none
+of which this was meant to hand over.
+
+**It shares the settings rather than copying them, and that is the point rather than a limitation.**
+A player who moves a slider restyles the sketch for the whole table. The user asked for exactly that
+— an occasional "let someone have a play with it", not a per-seat preference — so the shared-state
+argument above is what makes it work, not something it has to overcome. The genuinely *personal*
+version is a different feature and still unbuilt; per-player metadata remains its natural home, and
+the strongest case for it is the renderer, where a player's choice would be about their own hardware
+rather than the table's taste.
+
+**Concurrent editors are accepted, not arbitrated** (user, 2026-08-02: "it's ok if it doesn't deal
+with multiple concurrent changes very elegantly, as long as nothing breaks"). Two properties already
+in place are what make that safe rather than merely tolerable: appearance writes are
+read-modify-write over a shallow merge, so two people on *different* controls compose instead of
+clobbering; and a write rejected by the rate limiter already reports itself in the panel's status
+line rather than failing silently. Two people on the *same* control means last write wins, which is
+the accepted inelegance. Nothing locks, and nothing needs to.
+
+**The switch is not a permission boundary and could never be one.** Any client can write room
+metadata — the `Permission` enum governs item operations and says nothing about metadata — so this
+hides a tab rather than closing a door. It is the social control it appears to be. That is also why
+the *flag itself* is safe to keep in the same shared record: the shallow merge means a player saving
+a colour preserves it by construction rather than by a rule someone has to remember, and a test pins
+that.
+
+Three things it would have been easy to get wrong:
+
+- **It must fail closed.** Anything that is not exactly `true` reads as off, and a room written
+  before the field existed reads as off. Wrongly denying costs a GM one click; wrongly granting
+  changes a table's look under a GM who never offered it. Note this is the opposite intent from the
+  `renderer` default, which was moved *specifically* to reach existing rooms.
+- **It changes no geometry and no pixels**, so it is deliberately absent from both `differs` and
+  `invalidatesTrace`. Both are explicit field lists, so the omission is achieved by not adding it —
+  which is exactly what a later hand would undo out of tidiness, hence a test and a comment at the
+  point where the mistake would be made. In it, every client would rebuild the whole sketch because
+  a GM toggled a permission.
+- **Revocation has to reach an open panel.** The appearance subscription already fires on every
+  client, so withdrawing access folds a player's controls away mid-session. Without that, "I turned
+  it off and they kept changing things" is a real report. The check deliberately sits outside the
+  routine that repaints the controls, because that one skips its work while a write is pending so a
+  slider is not yanked mid-drag — and suppressing a *revocation* on those grounds would be precisely
+  backwards, since a player mid-drag is the player whose access has just been withdrawn.
+
+The controls are wired for every client and only their visibility varies. Installing them lazily on
+the first grant would leave a player who is handed the tab mid-session looking at live-seeming
+sliders that do nothing until they reopen the panel; listeners on hidden controls cost nothing, and
+that bug would not be free.
+
+**Wobble and period are left enabled for players**, knowingly. They are the only controls where
+ganging up costs other people work rather than surprise: both are baked into the geometry, so
+dragging either re-traces the map on *every* client. One person doing that is the cost today; three
+at once means every machine at the table re-traces repeatedly. It is a stutter rather than a break,
+and the alternative — a second, restricted version of the tab — is a permanent maintenance cost
+against a problem that ends when people stop dragging.
 
 ### 6. Squiggle noise must be static
 

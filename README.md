@@ -62,6 +62,14 @@ its own settings, so tuning one never disturbs another, and only the controls th
 renderer actually obeys are shown. These live in *room* metadata, so they follow the GM between
 scenes and reach every client automatically.
 
+There is also a **Players can change these** switch, off by default. Turning it on gives players
+the Appearance tab — and only that tab; the map, the explored area and the erase buttons stay
+yours. Note these are the *table's* settings rather than each player's own, so anyone who moves a
+slider changes the sketch for everybody. That is deliberate, and it is meant for handing the
+controls over occasionally rather than as a per-player preference. Several people editing at once
+works but is not arbitrated: changes to different controls merge, and two people on the same
+control means the last one wins.
+
 **Debug** — erase this extension's stored data, either for the scene (the explored region and the
 map nomination) or for the room (appearance settings). Worth having because the data lives in the
 scene and room on Owlbear's servers rather than in the extension, so removing and reinstalling it
