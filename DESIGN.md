@@ -2014,9 +2014,11 @@ Settings are tens of bytes and change only when the GM moves a control, so unlik
 discovered region this costs nothing in traffic.
 
 **Use room metadata, not scene metadata.** A GM's aesthetic preference sensibly follows them
-between scenes, whereas the discovered region is necessarily per-scene. More practically, it
-keeps settings out of the 16KB *scene* metadata budget that the discovered region is already
-the main claimant on. Per-scene overrides can be layered on later if, say, a snow map wants a
+between scenes, whereas the discovered region is necessarily per-scene. ~~More practically, it
+keeps settings out of the 16KB *scene* metadata budget that the discovered region is already the
+main claimant on.~~ **That second argument is void** — no scene metadata limit was found below
+512KB per key (see "Storage limits"), so there is no budget to stay out of. The first reason is
+the whole reason. Per-scene overrides can be layered on later if, say, a snow map wants a
 different palette from a dungeon.
 
 Two things not to mistake:
@@ -2336,8 +2338,9 @@ keeping in the back pocket for a quick visual spike.
 ## Build order
 
 0. ~~Run the CORS probe.~~ **Done — clean.** Steps 4+ target scene assets directly.
-1. Scaffold a fresh Vite + React + TS extension against `@owlbear-rodeo/sdk`, building and
-   loading in a real room. Add the dev log shim and its Node receiver at the same time, plus
+1. Scaffold a fresh Vite + ~~React +~~ TS extension against `@owlbear-rodeo/sdk`, building and
+   loading in a real room. (**React was never added** — see "The settings panel", where the
+   first real UI was built in plain TypeScript instead, and why.) Add the dev log shim and its Node receiver at the same time, plus
    the CORS startup assertion reporting through it. Two things to get right here:
    `vite.config.ts` needs `base: "/cartographers-fog/"` because project Pages serve from a
    subpath, and Pages has to move from branch-deploy to a GitHub Actions workflow once the

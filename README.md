@@ -14,30 +14,63 @@ itself. The effect should read as if the party is sketching a map as they explor
 
 ## Status
 
-**Early, but usable.** Exploration is tracked and persisted per scene, the map is traced into
-hand-drawn linework, and remembered ground is sketched behind the fog. Build order steps 0–6 are
-done apart from the cross-fade, which is deferred; see [DESIGN.md](DESIGN.md).
+**Usable, and running in real sessions.** Exploration is tracked and persisted per scene, the map
+is traced into hand-drawn linework, remembered ground is sketched behind the fog, and a GM panel
+handles setup and tuning. Build order steps 0–6 are done apart from the cross-fade, which is
+deferred; see [DESIGN.md](DESIGN.md).
+
+The sketch is drawn by a shader that shades each mark per screen pixel, rather than by stroking a
+path — which is what allows soft edges and a weight that varies along a single stroke. Four
+brushes ship: **Liner**, **Charcoal**, **Ink brush** and **Nib pen**. An optional parchment
+overlay mottles everything the party cannot currently see, so the screen reads as a map on
+parchment with a hole cut where they stand. The original line renderer is kept as a cheaper
+fallback for clients that struggle with the shader.
 
 Rough edges worth knowing before trying it:
 
 - **Dynamic Fog must be installed too** — this extension reads the walls and lights it places.
-- A scene with more than one MAP-layer image traces nothing until the GM picks one: right-click
-  the map and choose **Sketch from this map**. A locked map has to be unlocked to be
-  right-clickable.
+- A scene with more than one MAP-layer image traces nothing until the GM picks one, in the
+  panel's **Setup** tab.
 - Fine linework and small text do not survive tracing at typical battlemap resolutions.
 - A rotated map image is not handled — strokes will be misplaced.
+- Ground the party can *currently* see is never sketched, by design. A token carrying a light
+  leaves a bare patch, which fills in a moment after it moves on.
+- Under the shader renderer, the redraw after a token moves is slower than panning. Switching
+  **Drawing** to *Lines* trades the soft edges for speed.
 
-### GM controls
+## GM controls
 
-Right-click any item as the GM. There is no settings panel yet, so these live on the context
-menu:
+The extension adds a button at the top left of the room, which opens the settings panel. It is
+GM-only — a player who opens it is told the settings are the GM's. Three tabs:
 
-- **Sketch from this map** — nominate which MAP image is traced. Only needed when a scene has
-  more than one, and the map has to be unlocked to be right-clickable.
-- **Clear sketch** — delete the sketch from this scene. Nothing is lost: it is derived from the
-  map, so *Sketch from this map* redraws it whenever you want it back.
-- **Reset explored area** — forget everything the party has explored in this scene. **There is
-  no confirmation**, and it cannot be undone.
+**Setup** — configuring the scene.
+
+- **Map to sketch** — every MAP-layer image in the scene, listed with its size and lock state.
+  Only needed when a scene holds more than one, but unlike the context menu it works on a locked
+  map, which is the usual state of a scene's map.
+- **Mark whole map explored** — treat the entire map as already walked. Intended for judging the
+  sketch, since otherwise the look can only be assessed on ground the party has covered. It does
+  not clear Owlbear's own fog, which this extension does not control.
+- **Clear sketch** — remove the sketch from this scene. Nothing is lost: it is derived from the
+  map, so nominating a map draws it again.
+- **Reset explored area** — forget everything the party has explored in this scene. Confirmed
+  with a second click, and it cannot be undone.
+
+**Appearance** — how the sketch looks: renderer, brush, and that brush's own controls, plus
+colour, stroke width and the hand-drawn wobble, which are shared across brushes. Each brush keeps
+its own settings, so tuning one never disturbs another, and only the controls the current
+renderer actually obeys are shown. These live in *room* metadata, so they follow the GM between
+scenes and reach every client automatically.
+
+**Debug** — erase this extension's stored data, either for the scene (the explored region and the
+map nomination) or for the room (appearance settings). Worth having because the data lives in the
+scene and room on Owlbear's servers rather than in the extension, so removing and reinstalling it
+changes nothing. Only the open scene can be reached; other scenes keep their own data.
+
+The three original context-menu entries still ship: right-click any item as the GM for **Sketch
+from this map**, **Clear sketch** or **Reset explored area**. Two differences from the panel are
+worth knowing — the context-menu reset is *not* confirmed, and a locked map cannot be
+right-clicked at all, which is the hole the panel was built to close.
 
 ## Installation
 
@@ -82,9 +115,10 @@ dev server on port 5173. Then in Owlbear Rodeo, **Add Extension** with:
 http://localhost:5173/cartographers-fog/manifest.json
 ```
 
-The extension is headless — it registers no toolbar UI yet, so a successful load shows
-*nothing* in the Owlbear interface. Confirm it is running by watching `dev.log`, which should
-report the background page becoming ready and the CORS probe passing.
+A successful load puts the Cartographer's Fog button at the top left of the room. `dev.log` is
+the fuller signal: it should report the background page becoming ready and the CORS probe
+passing, and it carries the trace and region logs from then on. Every client in the room posts
+to the same log, so lines are labelled with the role and client that wrote them.
 
 Opening the dev server directly in a browser runs the code but leaves the SDK inert
 (`OBR.isAvailable === false`), since it is not embedded by Owlbear.
