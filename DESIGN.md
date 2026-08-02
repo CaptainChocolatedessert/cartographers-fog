@@ -1643,6 +1643,56 @@ Still true, and worth keeping in view: a wet brush's character comes from bristl
 pigment pooling, which are normally authored as texture — and no texture can reach the shader. What
 is here is a width profile, not a brush engine.
 
+##### The parchment overlay — built and judged 2026-08-02
+
+Mottled tone over everything the party cannot currently see, so the screen reads as a hand-drawn map
+on parchment with a hole cut where they are standing. **The fog supplies the colour**; the shader
+only varies it, which is why the tint is a small adjustment at low alpha rather than a parchment
+colour in its own right.
+
+**The stencil is a rectangle with holes, at full polygon precision.** A `Path` carries a `fillRule`,
+so the overlay is one path: the map's extent as the outer ring, each visible polygon as an inner
+ring, `evenodd`, `fillOpacity: 0`. The obvious alternative was the region's cell grid, and it would
+have been wrong — its cells are tens of world units across, and §3 is explicit that the *visible*
+boundary is the one that moves with the party and gets looked at directly. A clipped shader cannot
+soften its own edge, so the outline's precision is the only lever there is.
+
+**The holes are simplified, and must be.** One visibility polygon runs to ~2,750 vertices, and this
+path **cannot be chunked**: split the extent into tiles and each tile would still fill wherever
+another's hole overlapped it, because even-odd counts crossings across the whole path. So the
+tolerance rises until the command budget is met, which always converges.
+
+###### Two SDK facts this cost three rounds to find, both about attached effects
+
+1. **An attached `Effect` covers its parent's fill region — its own `width`, `height` and `position`
+   do not confine it.** Five diagnostic bands, each sized to a fifth of the map, all painted over
+   the whole map. **Corollary: attached effects cannot be tiled for performance.** One per stencil.
+2. **An `ATTACHMENT` effect is handed built-ins describing its parent, and generic uniform names
+   collide with them silently.** `scale` and `opacity` — two names the shader used — made it render
+   solid black. No error, no warning, no blank: black. Every custom uniform is now prefixed `pm`,
+   and a test pins the *prefix* rather than the two known-bad names, since the collision set is
+   undocumented and the next one will be some other ordinary word. The sketch's shaders never hit
+   this because they are `STANDALONE` and have no parent.
+
+**A diagnostic lesson worth keeping, because it is the inverse of the usual one.** Round two split
+the suspect shader into thirds across the map, expecting to see which ingredient failed. That could
+not work: a shader that fails to compile fails *entirely*, so all three thirds went black together
+and the split reported nothing. **A diagnostic must be able to produce a partial result, or it
+cannot localise anything** — bisecting a compile failure needs separate programs, not one program
+divided by geometry. Same shape as the probe ladder whose rungs saturated into a solid slab.
+
+**Judged and tuned in a room**: strength 5.5%, blotch size 2.5 grid squares, variation 90%, with a
+tint close to the fog's hue and a good deal darker. Blotches wanted to be **seven times coarser**
+than first guessed — 2.5 squares against 0.33 — which is the same direction charcoal's grain went.
+Procedural texture keeps wanting to be coarser than it seems it should.
+
+**Strength is the mean alpha, not the peak, and that was a fix rather than the original design.** The
+mottle began as `opacity × mix(1 - variation, 1, m)`, which made opacity the *peak*: since the noise
+averages about a half, raising variation deepened the texture *and* lightened the sheet, so the two
+controls fought. Centring the swing on the mean — `clamp(opacity × (1 + variation × (m - 0.5) × 2))`
+— decouples them. It is not a neutral change (the spread roughly doubles for the same numbers), so
+the default was re-based on the mean the judged settings actually produced.
+
 ##### Parked: making the shader renderer faster
 
 Deliberately not pursued (user, 2026-08-01). It is usable at 32 and the look is judged good; this is

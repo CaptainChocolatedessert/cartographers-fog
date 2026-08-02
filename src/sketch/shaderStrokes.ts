@@ -80,6 +80,15 @@ const SKETCH_LAYER = "CONTROL" as const;
 const BATCH_SIZE = 32;
 
 /**
+ * Above the parchment overlay, explicitly.
+ *
+ * Auto z-index would decide this from creation order, and the two are separate `addItems` calls
+ * made in whatever order a redraw happens to make them. Ink on top of paper is not a preference,
+ * it is the point — so it is pinned. `PARCHMENT_Z` is the other half of the pair.
+ */
+const SKETCH_Z = 10;
+
+/**
  * One compiled source per brush, built once and reused.
  *
  * **The source may depend on the brush but on nothing else.** A brush is a different program —
@@ -167,6 +176,8 @@ export async function renderShaderStrokes(
         // never learns where that clip is, so it cannot soften its own edge — which is the one
         // thing this renderer exists to do. Standalone effects respect their own alpha, so the
         // shader paints the mark and returns nothing elsewhere.
+        .zIndex(SKETCH_Z)
+        .disableAutoZIndex(true)
         .effectType("STANDALONE")
         .blendMode("SRC_OVER")
         .layer(SKETCH_LAYER)

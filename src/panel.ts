@@ -37,6 +37,7 @@ import {
   type Appearance,
   type BrushId,
   type BrushSettings,
+  type ParchmentSettings,
   type Renderer,
 } from "./sketch/appearance";
 import {
@@ -105,6 +106,15 @@ const nibAngleInput = element<HTMLInputElement>("nibAngle");
 const nibAngleValue = element("nibAngleValue");
 const nibContrastInput = element<HTMLInputElement>("nibContrast");
 const nibContrastValue = element("nibContrastValue");
+const parchmentOn = element<HTMLInputElement>("parchmentOn");
+const parchmentControls = element("parchmentControls");
+const parchmentColor = element<HTMLInputElement>("parchmentColor");
+const parchmentOpacity = element<HTMLInputElement>("parchmentOpacity");
+const parchmentOpacityValue = element("parchmentOpacityValue");
+const parchmentScale = element<HTMLInputElement>("parchmentScale");
+const parchmentScaleValue = element("parchmentScaleValue");
+const parchmentContrast = element<HTMLInputElement>("parchmentContrast");
+const parchmentContrastValue = element("parchmentContrastValue");
 const shaderOnly = element("shaderOnly");
 const strokesOnly = element("strokesOnly");
 const grainOnly = element("grainOnly");
@@ -136,36 +146,31 @@ function say(message: string): void {
 }
 
 /**
- * Width is *displayed* as `1/N` of a grid square, because that is how it is reasoned about — the
- * shipped default is "a twelfth of a square", not "0.0833 squares".
+ * Width is carried as **tenths of a percent of a grid square**, so the slider is linear in the
+ * thing being looked at.
  *
- * But a bigger denominator is a *finer* line, so using it as the slider's value directly makes
- * dragging right thin the stroke, which is backwards from what a slider implies. The slider
- * therefore carries a thickness rank and these two functions flip between the two scales. The
- * endpoints are the denominators of `MIN_WIDTH_SQUARES` and `MAX_WIDTH_SQUARES`, so the slider
- * cannot express a value the store would clamp.
+ * This replaced a slider whose value was a *denominator* — `1/12` of a square and so on — which
+ * read well but behaved badly (user, 2026-08-02: "the result feels nonlinear with too little
+ * resolution at the high end"). The trouble is that 1/N compresses exactly where the control is
+ * wanted: one step near the thick end moved the width by a quarter of itself (1/4 to 1/5 is a 20%
+ * jump), while one step near the thin end moved it by under two percent. Resolution was inverted,
+ * and there was no way to ask for a stroke between 1/4 and 1/5 at all.
+ *
+ * Percent of a square gives every step the same weight. The cost is the readout: "8.3%" is less
+ * evocative than "1/12", and the shipped default is genuinely thought of as a twelfth. That is the
+ * trade, and it is worth it — the display was never the part that was hard to use.
+ *
+ * Tenths rather than whole percent because the useful range is only 1.7% to 25%, and whole percent
+ * would offer 24 positions across it.
  */
-const THIN_DENOMINATOR = Math.round(1 / MIN_WIDTH_SQUARES);
-const THICK_DENOMINATOR = Math.round(1 / MAX_WIDTH_SQUARES);
-const RANK_SUM = THIN_DENOMINATOR + THICK_DENOMINATOR;
+const widthTenthsFor = (squares: number): number => Math.round(squares * 1000);
 
-/** Slider position (higher = thicker) for a width in grid squares. */
-function rankFor(squares: number): number {
-  return RANK_SUM - Math.round(1 / squares);
-}
+const widthSquaresFor = (tenths: number): number =>
+  Math.min(MAX_WIDTH_SQUARES, Math.max(MIN_WIDTH_SQUARES, tenths / 1000));
 
-/** Width in grid squares for a slider position. */
-function squaresForRank(rank: number): number {
-  return squaresFor(RANK_SUM - rank);
-}
-
-function denominatorForRank(rank: number): number {
-  return RANK_SUM - rank;
-}
-
-function squaresFor(denominator: number): number {
-  return Math.min(MAX_WIDTH_SQUARES, Math.max(MIN_WIDTH_SQUARES, 1 / denominator));
-}
+const showWidth = (tenths: number): void => {
+  widthValue.textContent = `${(tenths / 10).toFixed(1)}%`;
+};
 
 /**
  * Wobble runs 0 to `MAX_WOBBLE_SQUARES` over the slider's whole travel, in half-hundredths of a
@@ -304,6 +309,42 @@ function showBrushSettings(settings: BrushSettings): void {
   edgeRoughnessValue.textContent = `${rough}%`;
 }
 
+/**
+ * Reflect the parchment settings, and hide its controls when it is off.
+ *
+ * Hidden rather than disabled, matching the brush groups: four inert sliders under an unticked box
+ * is a lot of panel spent saying nothing.
+ */
+function showParchment(settings: ParchmentSettings): void {
+  parchmentOn.checked = settings.enabled;
+  parchmentControls.hidden = !settings.enabled;
+  parchmentColor.value = settings.color;
+
+  const opacity = Math.round(settings.opacity * 1000);
+  parchmentOpacity.value = String(opacity);
+  parchmentOpacityValue.textContent = `${(opacity / 10).toFixed(1)}%`;
+
+  const scale = Math.round(settings.scaleSquares * 100);
+  parchmentScale.value = String(scale);
+  parchmentScaleValue.textContent = (scale / 100).toFixed(2);
+
+  const contrast = Math.round(settings.contrast * 100);
+  parchmentContrast.value = String(contrast);
+  parchmentContrastValue.textContent = `${contrast}%`;
+}
+
+/**
+ * Queue a change to the parchment block, composed against the whole of it.
+ *
+ * Same reasoning as `queueBrush`: `writeAppearance` merges shallowly, so sending a partial
+ * `parchment` object would erase the fields it left out.
+ */
+function queueParchment(changes: Partial<ParchmentSettings>): void {
+  const parchment = { ...current.parchment, ...changes };
+  current = { ...current, parchment };
+  queueAppearance({ parchment });
+}
+
 /** Grain cell size is carried in thousandths of a grid square. */
 const grainSquaresFor = (thousandths: number): number => thousandths / 1000;
 const grainThousandthsFor = (squares: number): number =>
@@ -373,10 +414,11 @@ function showAppearance(appearance: Appearance): void {
   showRendererNote(appearance.renderer);
   showRelevantControls(appearance.renderer, appearance.brush);
   showBrushSettings(appearance.brushes[appearance.brush]);
+  showParchment(appearance.parchment);
   colorInput.value = appearance.strokeColor;
-  const rank = rankFor(appearance.strokeWidthSquares);
-  widthInput.value = String(rank);
-  widthValue.textContent = `1/${denominatorForRank(rank)}`;
+  const widthTenths = widthTenthsFor(appearance.strokeWidthSquares);
+  widthInput.value = String(widthTenths);
+  showWidth(widthTenths);
   const step = wobbleStepFor(appearance.wobbleSquares);
   wobbleInput.value = String(step);
   showWobble(step);
@@ -623,10 +665,10 @@ async function start(): Promise<void> {
   });
 
   widthInput.addEventListener("input", () => {
-    const rank = Number(widthInput.value);
+    const tenths = Number(widthInput.value);
     // Readout updates now, the write lands on the pause — see `queueAppearance`.
-    widthValue.textContent = `1/${denominatorForRank(rank)}`;
-    queueAppearance({ strokeWidthSquares: squaresForRank(rank) });
+    showWidth(tenths);
+    queueAppearance({ strokeWidthSquares: widthSquaresFor(tenths) });
   });
 
   wobbleInput.addEventListener("input", () => {
@@ -704,6 +746,33 @@ async function start(): Promise<void> {
     const contrast = Number(nibContrastInput.value) / 100;
     nibContrastValue.textContent = `${Math.round(contrast * 100)}%`;
     queueBrush({ nibContrast: contrast });
+  });
+
+  parchmentOn.addEventListener("change", () => {
+    parchmentControls.hidden = !parchmentOn.checked;
+    queueParchment({ enabled: parchmentOn.checked });
+  });
+
+  parchmentColor.addEventListener("input", () => {
+    queueParchment({ color: parchmentColor.value });
+  });
+
+  parchmentOpacity.addEventListener("input", () => {
+    const opacity = Number(parchmentOpacity.value) / 1000;
+    parchmentOpacityValue.textContent = `${(opacity * 100).toFixed(1)}%`;
+    queueParchment({ opacity });
+  });
+
+  parchmentScale.addEventListener("input", () => {
+    const squares = Number(parchmentScale.value) / 100;
+    parchmentScaleValue.textContent = squares.toFixed(2);
+    queueParchment({ scaleSquares: squares });
+  });
+
+  parchmentContrast.addEventListener("input", () => {
+    const contrast = Number(parchmentContrast.value) / 100;
+    parchmentContrastValue.textContent = `${Math.round(contrast * 100)}%`;
+    queueParchment({ contrast });
   });
 
   brushInput.addEventListener("change", () => {

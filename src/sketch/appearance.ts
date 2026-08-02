@@ -114,6 +114,32 @@ export interface Appearance {
   readonly brush: BrushId;
   /** Every brush's settings, kept independently so switching brushes loses no tuning. */
   readonly brushes: Readonly<Record<BrushId, BrushSettings>>;
+  /** The parchment overlay — mottled tone over everything the party cannot currently see. */
+  readonly parchment: ParchmentSettings;
+}
+
+/**
+ * The parchment overlay's settings.
+ *
+ * **The fog supplies the base colour; this only varies it.** The overlay is translucent by design,
+ * so `color` is a tint chosen to sit against whatever the fog already looks like rather than a
+ * parchment colour in its own right, and `opacity` is expected to be low. That is why there is no
+ * "parchment colour" here in the sense a painter would mean it.
+ *
+ * Independent of the renderer and of the brush: the overlay is drawn whether the sketch is `Path`
+ * items or shader effects, because it is a separate item pair underneath both.
+ */
+export interface ParchmentSettings {
+  /** **Off by default** — new and unjudged, so no existing room changes on reload. */
+  readonly enabled: boolean;
+  /** Tint as `#rrggbb`. */
+  readonly color: string;
+  /** Peak alpha of the mottle, 0–1. Low: the fog is doing the colouring. */
+  readonly opacity: number;
+  /** Size of one mottle cell, in grid squares. */
+  readonly scaleSquares: number;
+  /** How much the mottle varies, 0–1. Zero is a flat wash. */
+  readonly contrast: number;
 }
 
 export type Renderer = "strokes" | "shader";
@@ -298,6 +324,29 @@ export const DEFAULT_APPEARANCE: Appearance = {
       pressure: 0,
     },
   },
+  // Off, and unjudged. A default that switched it on would change every existing table's map on
+  // reload — and this one covers the whole screen, so it is the least subtle change available.
+  //
+  // The tint is a warm off-white at low alpha: the fog underneath supplies the tone, and this only
+  // mottles it. A saturated colour here would read as a filter over the map rather than as paper.
+  parchment: {
+    enabled: false,
+    color: "#D8C49A",
+    // **Tuned by eye in a room 2026-08-02**, with a tint close to the fog's hue and a good deal
+    // darker. Blotches came out far coarser than first guessed — two and a half grid squares
+    // against a third of one — so the mottle reads as unevenness in a sheet rather than as grain.
+    // Charcoal's grain sits at 0.09; these are different scales of thing and tuning one to match
+    // the other makes both look wrong.
+    //
+    // `opacity` is the **mean** alpha, not the peak — `contrast` swings the mottle either side of
+    // it without changing the average darkness. The judged settings were made under the older form
+    // where opacity was the peak, so this is re-based on the mean they actually produced: 0.1 peak
+    // at 0.9 variation averaged 0.055. Expect the texture to read with more depth at the same
+    // overall weight, and re-judge. See `PARCHMENT_SKSL`.
+    opacity: 0.055,
+    scaleSquares: 2.5,
+    contrast: 0.9,
+  },
 };
 
 /**
@@ -350,6 +399,17 @@ export const MAX_TAPER_FRACTION = 0.5;
  */
 export const MAX_ENTRY_BULGE = 2.5;
 export const MIN_TAIL_WIDTH = 0.15;
+
+/**
+ * Parchment mottle bounds, in grid squares.
+ *
+ * Far coarser than charcoal's grain, and deliberately so: this covers a whole screen rather than a
+ * stroke, and blotches the size of a stroke's grain would read as noise on a television. The floor
+ * is also a cost floor — the finer the cells, the more of the fBm's detail lands inside a pixel and
+ * is paid for without being seen.
+ */
+export const MIN_PARCHMENT_SCALE_SQUARES = 0.05;
+export const MAX_PARCHMENT_SCALE_SQUARES = 3;
 
 /**
  * Width bounds, in grid squares.
@@ -462,6 +522,29 @@ export function fromRoomMetadata(
     renderer: readRenderer(stored.renderer),
     brush: readBrush(stored.brush),
     brushes: readBrushes(stored),
+    parchment: readParchment(stored.parchment),
+  };
+}
+
+function readParchment(raw: unknown): ParchmentSettings {
+  const stored = (typeof raw === "object" && raw !== null ? raw : {}) as Record<
+    string,
+    unknown
+  >;
+  const fallback = DEFAULT_APPEARANCE.parchment;
+
+  return {
+    enabled:
+      typeof stored.enabled === "boolean" ? stored.enabled : fallback.enabled,
+    color: HEX_COLOR.test(String(stored.color)) ? String(stored.color) : fallback.color,
+    opacity: readClamped(stored.opacity, 0, 1, fallback.opacity),
+    scaleSquares: readClamped(
+      stored.scaleSquares,
+      MIN_PARCHMENT_SCALE_SQUARES,
+      MAX_PARCHMENT_SCALE_SQUARES,
+      fallback.scaleSquares,
+    ),
+    contrast: readClamped(stored.contrast, 0, 1, fallback.contrast),
   };
 }
 
@@ -650,7 +733,21 @@ export function differs(before: Appearance, after: Appearance): boolean {
     // brushes are compared rather than just the selected one: the panel writes whichever brush the
     // GM is editing, and a change that `differs` does not see is a change the tracker never
     // redraws for.
-    BRUSHES.some((id) => brushDiffers(before.brushes[id], after.brushes[id]))
+    BRUSHES.some((id) => brushDiffers(before.brushes[id], after.brushes[id])) ||
+    parchmentDiffers(before.parchment, after.parchment)
+  );
+}
+
+function parchmentDiffers(
+  before: ParchmentSettings,
+  after: ParchmentSettings,
+): boolean {
+  return (
+    before.enabled !== after.enabled ||
+    before.color !== after.color ||
+    before.opacity !== after.opacity ||
+    before.scaleSquares !== after.scaleSquares ||
+    before.contrast !== after.contrast
   );
 }
 

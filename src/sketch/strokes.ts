@@ -65,6 +65,15 @@ const DASH_SQUARES = 0;
 const GAP_SQUARES = 0.035;
 
 /**
+ * Above the parchment overlay, explicitly.
+ *
+ * Auto z-index would decide this from creation order, and the two renderers are separate
+ * `addItems` calls made in whatever order a redraw happens to make them. Ink on top of paper is not
+ * a preference, it is the point — so it is pinned. `PARCHMENT_Z` is the other half of the pair.
+ */
+const SKETCH_Z = 10;
+
+/**
  * Replace the sketch with these segments.
  *
  * Delete-and-replace rather than diffing. The visible set changes wholesale as a token moves,
@@ -141,6 +150,8 @@ function toStrokeItem(
       .strokeDash([...dash])
       // Open polylines, so any fill would flood the area they enclose rather than tint a line.
       .fillOpacity(0)
+      .zIndex(SKETCH_Z)
+      .disableAutoZIndex(true)
       .layer(SKETCH_LAYER)
       .locked(true)
       .disableHit(true)

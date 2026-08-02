@@ -39,6 +39,7 @@ import {
 // `renderWash` is not imported: the wash is no longer drawn, see `render`. `clearWash` stays, so
 // a client that had one on screen from an earlier build loses it on the next scene change.
 import { clearWash } from "./wash";
+import { clearParchment, renderParchment } from "./parchmentOverlay";
 import {
   onSketchSettingsChange,
   readSketchSettings,
@@ -126,6 +127,7 @@ const MAX_BUFFERED_SAMPLES = 48;
 
 let grid: CellGrid | undefined;
 let discovered: RegionMask | undefined;
+let sceneDpi = 150;
 let isGm = false;
 
 /** Where each light was when it last contributed, so sampling can be distance-based. */
@@ -216,6 +218,10 @@ async function initialiseForScene(): Promise<void> {
   if (!sceneGrid) return;
 
   grid = sceneGrid;
+  // Kept because the parchment overlay sizes its mottle and its simplification tolerance in grid
+  // squares, and `render` has no other route to the scene's dpi. Read once per scene rather than
+  // per redraw: it cannot change without the scene changing, and redraws run several a second.
+  sceneDpi = (await OBR.scene.grid.getDpi()) || 150;
   discovered = (await readRegion(sceneGrid)) ?? createMask(sceneGrid);
   lastSampled.clear();
   visiblePolygons = [];
@@ -339,6 +345,9 @@ async function teardownScene(): Promise<void> {
   visiblePolygons = [];
 
   await clearWash().catch(() => {});
+  // The overlay's holes describe where the party was in the *previous* scene. Leaving it up would
+  // paint the new one through a stencil cut for somewhere else.
+  await clearParchment().catch(() => {});
   // A new scene is a new map: the cached trace addresses ground this scene does not have.
   await resetSketch();
 }
@@ -579,7 +588,20 @@ async function render(): Promise<void> {
     // because it showed the tracked region and nothing else. The sketch now draws that region
     // properly, and a translucent slab underneath only muddies it. `wash.ts` stays as DESIGN.md's
     // rendering mode 3 and as the way to see the raw region when tracking is in doubt.
+    // Timed separately, and both halves reported, because this is the redraw that a token move
+    // already made noticeably slower — so anything added here has to be attributable rather than
+    // merely suspected. The parchment overlay is the new arrival; the sketch figure is the
+    // baseline to read it against.
+    const startedSketch = performance.now();
     const sketch = await renderSketch(discovered, visiblePolygons);
+    const sketchMs = performance.now() - startedSketch;
+
+    const parchment = await renderParchment(
+      gridBounds(grid),
+      visiblePolygons,
+      appearance.parchment,
+      sceneDpi,
+    );
 
     devLog(
       "info",
@@ -589,7 +611,18 @@ async function render(): Promise<void> {
           : `, sketch ${sketch.drawn}/${sketchSegmentCount()} segments ` +
             // Both halves of the wall margin. On a walled scene these are how its size gets
             // judged: all-zero means it is doing nothing, not that nothing needed doing.
-            `(margin +${sketch.rescued}/-${sketch.suppressed})`),
+            `(margin +${sketch.rescued}/-${sketch.suppressed})`) +
+        ` in ${sketchMs.toFixed(0)}ms` +
+        (parchment.drawn === 0
+          ? "; parchment off"
+          : `; parchment ${parchment.commands} commands, ` +
+            `${parchment.tolerance.toFixed(1)}u tolerance, ` +
+            `build ${parchment.buildMs.toFixed(0)}ms + commit ${parchment.commitMs.toFixed(0)}ms` +
+            // Non-zero means the command budget forced a hole to be abandoned, which leaves
+            // parchment over ground the party is looking at. Conspicuous, so never silent.
+            (parchment.dropped > 0
+              ? ` — ${parchment.dropped} CUT-OUT(S) DROPPED, parchment is covering lit ground`
+              : "")),
     );
   } catch (error) {
     devLog("error", "region: wash render failed", error);
@@ -609,6 +642,26 @@ async function render(): Promise<void> {
  * Where a polygon actually sits in world space, for diagnosing a sample that marks nothing.
  * The usual cause is the polygon falling outside the grid, which only covers the MAP images.
  */
+/**
+ * World bounds of the cell grid — the extent the parchment overlay covers.
+ *
+ * The MAP images' bounds, since that is what `buildSceneGrid` spans. Ground beyond the map is left
+ * alone: there is no map out there for the overlay to be a drawing *of*, and the fog past the edge
+ * is not something this extension has a claim on.
+ */
+function gridBounds(
+  cells: CellGrid | undefined,
+): { min: Vector2; max: Vector2 } | undefined {
+  if (!cells) return undefined;
+  return {
+    min: { ...cells.origin },
+    max: {
+      x: cells.origin.x + cells.columns * cells.cellSize,
+      y: cells.origin.y + cells.rows * cells.cellSize,
+    },
+  };
+}
+
 function describeReach(polygon: readonly Vector2[]): string {
   const bounds = boundingBox(polygon);
   return (

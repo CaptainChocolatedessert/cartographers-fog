@@ -12,6 +12,8 @@ import {
   MIN_WIDTH_SQUARES,
   MIN_WOBBLE_WAVELENGTH_SQUARES,
   MAX_GRAIN_SCALE_SQUARES,
+  MAX_PARCHMENT_SCALE_SQUARES,
+  MIN_PARCHMENT_SCALE_SQUARES,
   MIN_GRAIN_SCALE_SQUARES,
   BRUSHES,
   differs,
@@ -95,6 +97,7 @@ describe("fromRoomMetadata", () => {
         ink: DEFAULT_APPEARANCE.brushes.ink,
         nib: DEFAULT_APPEARANCE.brushes.nib,
       },
+      parchment: DEFAULT_APPEARANCE.parchment,
     });
   });
 
@@ -399,6 +402,57 @@ describe("brushes", () => {
     expect(differs(before, tuned)).toBe(true);
     expect(invalidatesTrace(before, switched)).toBe(false);
     expect(invalidatesTrace(before, tuned)).toBe(false);
+  });
+});
+
+describe("parchment", () => {
+  it("ships the values judged in a room", () => {
+    // Tuned by eye 2026-08-02. Pinned for the same reason charcoal's are: changing a judged default
+    // changes what every table sees, so it should break a test rather than slip through.
+    const { opacity, scaleSquares, contrast } = DEFAULT_APPEARANCE.parchment;
+
+    expect(opacity).toBe(0.055);
+    expect(scaleSquares).toBe(2.5);
+    expect(contrast).toBe(0.9);
+  });
+
+  it("is off by default", () => {
+    // It covers the whole screen, so switching it on by default would be the least subtle change
+    // this project could make to an existing table's map.
+    expect(DEFAULT_APPEARANCE.parchment.enabled).toBe(false);
+    expect(fromRoomMetadata({}).parchment.enabled).toBe(false);
+  });
+
+  it("is noticed, and costs a redraw rather than a re-trace", () => {
+    // Nested, so a shallow compare would leave every parchment control apparently dead. And none
+    // of it is geometry — the overlay is a separate item pair that does not touch the sketch.
+    const before = DEFAULT_APPEARANCE;
+    const on = { ...before, parchment: { ...before.parchment, enabled: true } };
+    const tinted = { ...before, parchment: { ...before.parchment, color: "#112233" } };
+
+    expect(differs(before, on)).toBe(true);
+    expect(differs(before, tinted)).toBe(true);
+    expect(invalidatesTrace(before, on)).toBe(false);
+    expect(invalidatesTrace(before, tinted)).toBe(false);
+  });
+
+  it("clamps and falls back per field", () => {
+    const read = (v: unknown) => fromRoomMetadata(wrap({ parchment: v })).parchment;
+
+    expect(read({ opacity: 9 }).opacity).toBe(1);
+    expect(read({ opacity: -1 }).opacity).toBe(0);
+    expect(read({ color: "puce" }).color).toBe(DEFAULT_APPEARANCE.parchment.color);
+    expect(read({ enabled: "yes" }).enabled).toBe(false);
+    expect(read({ scaleSquares: 99 }).scaleSquares).toBe(MAX_PARCHMENT_SCALE_SQUARES);
+    expect(read({ scaleSquares: 0 }).scaleSquares).toBe(MIN_PARCHMENT_SCALE_SQUARES);
+  });
+
+  it("survives a parchment value that is not an object", () => {
+    for (const nonsense of [null, 7, "on", []]) {
+      expect(fromRoomMetadata(wrap({ parchment: nonsense })).parchment).toEqual(
+        DEFAULT_APPEARANCE.parchment,
+      );
+    }
   });
 });
 
