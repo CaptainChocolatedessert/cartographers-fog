@@ -29,13 +29,20 @@ import OBR, { buildEffect, type Item } from "@owlbear-rodeo/sdk";
 import {
   batchBounds,
   batchPieces,
+  brushFeatures,
   buildUniforms,
   parseHexColor,
   sdfSource,
   toPieces,
   type SdfStyle,
 } from "./sdf";
-import { BRUSHES, type Appearance, type BrushId } from "./appearance";
+import { inkWidths, nibWidths } from "./brushWidths";
+import {
+  BRUSHES,
+  type Appearance,
+  type BrushId,
+  type BrushSettings,
+} from "./appearance";
 import type { TracedSegment } from "../trace/chop";
 
 const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
@@ -144,7 +151,10 @@ export async function renderShaderStrokes(
   const margin = style.halfWidth + style.feather;
 
   const items: Item[] = [];
-  for (const batch of batchPieces(toPieces(strokes), BATCH_SIZE)) {
+  for (const batch of batchPieces(
+    toPieces(strokes, brushWidthsFor(brush, settings, halfWidth, strokes)),
+    BATCH_SIZE,
+  )) {
     const bounds = batchBounds(batch, margin);
     items.push(
       buildEffect()
@@ -152,7 +162,7 @@ export async function renderShaderStrokes(
         .height(bounds.max.y - bounds.min.y)
         .position({ x: bounds.min.x, y: bounds.min.y })
         .sksl(SOURCES[brush])
-        .uniforms([...buildUniforms(batch, bounds, style, BATCH_SIZE)])
+        .uniforms([...buildUniforms(batch, bounds, style, BATCH_SIZE, brush)])
         // `STANDALONE`, with no parent. An *attached* effect is clipped to its parent's fill and
         // never learns where that clip is, so it cannot soften its own edge — which is the one
         // thing this renderer exists to do. Standalone effects respect their own alpha, so the
@@ -175,6 +185,47 @@ export async function renderShaderStrokes(
 
   return items.length;
 }
+
+/**
+ * Per-point half-widths, or `undefined` for a brush that draws at one thickness.
+ *
+ * `undefined` rather than an array of the constant width: that is what makes `toPieces` omit the
+ * slot's width uniform entirely, so the liner and charcoal keep the shorter shader and the shorter
+ * uniform list. Paying for varying width on a brush that does not vary would be a cost in the
+ * hottest loop in the project for no visible difference.
+ *
+ * The bound on `brushFeatures` is deliberate: this must return widths for exactly the brushes whose
+ * source declares the uniforms, and reading that from the same predicate the generator uses is what
+ * keeps the two from drifting.
+ */
+function brushWidthsFor(
+  brush: BrushId,
+  settings: BrushSettings,
+  halfWidth: number,
+  strokes: readonly TracedSegment[],
+): readonly (readonly number[])[] | undefined {
+  if (!brushFeatures(brush).varyingWidth) return undefined;
+
+  if (brush === "nib") {
+    return nibWidths(strokes, {
+      halfWidth,
+      angle: (settings.nibAngleDegrees * Math.PI) / 180,
+      contrast: settings.nibContrast,
+    });
+  }
+
+  return inkWidths(strokes, {
+    halfWidth,
+    taperFraction: settings.taperFraction,
+    pressure: settings.pressure,
+    // Fixed, so the same map redraws identically — §6 again. A seed drawn from the clock would make
+    // every stroke change thickness on every token move, which is the map breathing by another
+    // route.
+    seed: INK_SEED,
+  });
+}
+
+const INK_SEED = 0x5eed0117;
 
 export async function clearShaderStrokes(): Promise<void> {
   const existing = await OBR.scene.local.getItems(

@@ -1557,6 +1557,64 @@ The panel says **"Color", not "Ink"**, since charcoal is not ink and a label nam
 as wrong under any brush that is not that medium. The stored key remains `strokeColor`; renaming it
 would lose the colour of every room that has written one.
 
+##### Brushes — ink and nib, built 2026-08-01, UNJUDGED
+
+Both needed the same new capability, which is why they were built together: **width that varies
+along a mark**. A nib's width comes from the direction of travel, an ink brush's from position along
+the stroke, and once either exists the other is a different formula over the same machinery.
+
+**The width is computed on the CPU, not in the shader** (`sketch/brushWidths.ts`, pure and tested).
+Per-pixel cost is what limits this renderer and it is paid *per slot*, so anything decided here
+costs a few thousand operations once at trace time instead of millions per frame. The shader's whole
+share is one `mix` and one subtraction per slot — the smallest addition that expresses varying width
+at all. It also puts the parts that get judged by eye somewhere a test can hold them.
+
+**The distance function becomes a round cone**: `length(pa - ba*h) - mix(r.x, r.y, h)`, reusing the
+projection parameter `h` that measuring distance already computes. This is the cheap approximation,
+not the exact varying-radius field — the true one accounts for the slope of the radius change. The
+error scales with how fast the radius moves along one piece, and pieces here are short (cut for
+masking, then subdivided again by the wobble), so it is not visible. Exactness would cost several
+operations in the hottest loop in the project.
+
+**The alpha ramp was unified to a signed distance thresholded at zero.** Constant-width brushes now
+subtract `halfWidth` once after the chain instead of comparing against it inside `smoothstep`. That
+is algebraically identical — both reduce to `(d - halfWidth + e) / 2e` — so the judged liner and
+charcoal are unchanged, and it lets one ramp serve both shapes.
+
+**Grain and varying width are independent features, not four hard-coded brushes.** `brushFeatures`
+is the single place that says what a brush needs, and both `sdfSource` and `buildUniforms` read it.
+That matters because a disagreement between them fails *silently in both directions*: an undeclared
+uniform is ignored, a declared one never supplied leaves the effect drawing nothing, and neither
+throws. A test asserts the two sets are equal for every brush.
+
+**Taper forced a pipeline change, and it is the interesting part.** `chop.ts` cuts contours into
+segments so masking can work per segment, which destroys the notion of a stroke — and an ink brush
+must taper at the ends of the *original contour*, not at every masking cut, or a wall reads as a row
+of dashes. So the cut now records what it destroys: `SegmentProvenance` carries the contour index,
+the piece's arc-length span within it, and whether the contour was closed. Every later stage rewrites
+points, and each was rebuilding the segment literally and silently dropping the new field, so
+`reshapeSegment` now owns that rebuild.
+
+**Closed contours are never tapered.** A loop has no ends, so a taper would put a thin patch at
+whatever arbitrary point the tracer began walking it — a defect that would *move* if the tracer
+changed, which is the worst kind to debug.
+
+Two smaller decisions worth not re-deriving:
+
+- **The nib uses `|sin|`, not `sin`.** A nib is an edge, so a stroke and its reverse are the same
+  thickness — and the tracer's walk direction is arbitrary, so a signed response would make width
+  depend on which way the skeleton happened to be walked.
+- **Tangents use central differences.** At a masking cut the two copies of a shared point see
+  different neighbours and can differ slightly in width. That is the same shape of problem
+  `wobble.ts` documents for normals but far milder: there the two copies moved to different
+  *places* and visibly tore the stroke apart, here the point stays put and only its width differs,
+  by a fraction of a percent on geometry the wobble has already subdivided.
+
+**Neither is judged yet.** Defaults exist to make each medium legible on first sight, not because
+they are right. Note the honest expectation recorded when these were proposed: **the ink brush is
+the one most likely to disappoint**, because a wet brush's character comes from bristle separation
+and pigment pooling, which are normally authored as texture — and no texture can reach the shader.
+
 ##### Parked: making the shader renderer faster
 
 Deliberately not pursued (user, 2026-08-01). It is usable at 32 and the look is judged good; this is

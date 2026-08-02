@@ -273,6 +273,8 @@
             <select id="brush">
               <option value="liner">Liner</option>
               <option value="charcoal">Charcoal</option>
+              <option value="ink">Ink brush</option>
+              <option value="nib">Nib pen</option>
             </select>
           </div>
           <div class="row">
@@ -307,6 +309,48 @@
               <!-- Displaces the edge threshold, so the silhouette breaks up rather than blurring. -->
               <input type="range" id="edgeRoughness" min="0" max="100" step="5" value="80" />
               <output id="edgeRoughnessValue">80%</output>
+            </div>
+          </div>
+
+          <!-- Ink brush only: width varies along the stroke. -->
+          <div id="inkOnly" hidden>
+            <div class="row">
+              <label for="taper">Taper</label>
+              <!--
+                Percent of the whole stroke's length spent tapering, at each end. Applied to the
+                traced contour rather than to a masking segment, or every cut would look like the
+                brush had been lifted. Stops at 50%, where the two ends meet.
+              -->
+              <input type="range" id="taper" min="0" max="50" step="2" value="20" />
+              <output id="taperValue">20%</output>
+            </div>
+            <div class="row">
+              <label for="pressure">Pressure</label>
+              <!-- Slow variation along the stroke. Zero is a mark of perfectly even weight. -->
+              <input type="range" id="pressure" min="0" max="100" step="5" value="40" />
+              <output id="pressureValue">40%</output>
+            </div>
+            <p class="hint">
+              Closed shapes are never tapered — a loop has no ends to taper from.
+            </p>
+          </div>
+
+          <!-- Nib pen only: width comes from the direction of travel. -->
+          <div id="nibOnly" hidden>
+            <div class="row">
+              <label for="nibAngle">Nib angle</label>
+              <!--
+                Degrees, 0-180. A nib is an edge: travel across it and you draw its full breadth,
+                travel along it and you draw a hairline. Past 180 it repeats.
+              -->
+              <input type="range" id="nibAngle" min="0" max="180" step="5" value="40" />
+              <output id="nibAngleValue">40°</output>
+            </div>
+            <div class="row">
+              <label for="nibContrast">Hairline</label>
+              <!-- How thin the thinnest stroke gets. At 100% the nib is a round pen. -->
+              <input type="range" id="nibContrast" min="0" max="100" step="5" value="12" />
+              <output id="nibContrastValue">12%</output>
             </div>
           </div>
         </div>

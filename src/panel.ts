@@ -93,9 +93,19 @@ const grainDepthInput = element<HTMLInputElement>("grainDepth");
 const grainDepthValue = element("grainDepthValue");
 const edgeRoughnessInput = element<HTMLInputElement>("edgeRoughness");
 const edgeRoughnessValue = element("edgeRoughnessValue");
+const taperInput = element<HTMLInputElement>("taper");
+const taperValue = element("taperValue");
+const pressureInput = element<HTMLInputElement>("pressure");
+const pressureValue = element("pressureValue");
+const nibAngleInput = element<HTMLInputElement>("nibAngle");
+const nibAngleValue = element("nibAngleValue");
+const nibContrastInput = element<HTMLInputElement>("nibContrast");
+const nibContrastValue = element("nibContrastValue");
 const shaderOnly = element("shaderOnly");
 const strokesOnly = element("strokesOnly");
 const grainOnly = element("grainOnly");
+const inkOnly = element("inkOnly");
+const nibOnly = element("nibOnly");
 const scatterInput = element<HTMLInputElement>("scatter");
 const scatterValue = element("scatterValue");
 const pencilNote = element("pencilNote");
@@ -242,9 +252,12 @@ function showRendererNote(renderer: Renderer): void {
 function showRelevantControls(renderer: Renderer, brush: BrushId): void {
   shaderOnly.hidden = renderer !== "shader";
   strokesOnly.hidden = renderer !== "strokes";
-  // Grain is charcoal's alone. Under the liner these sliders would move and change nothing, which
-  // reads as a broken brush rather than as controls that do not apply.
-  grainOnly.hidden = renderer !== "shader" || brush !== "charcoal";
+  // Each brush shows only its own controls. Under another brush these sliders would move and change
+  // nothing, which reads as a broken brush rather than as controls that do not apply.
+  const brushes = renderer === "shader";
+  grainOnly.hidden = !brushes || brush !== "charcoal";
+  inkOnly.hidden = !brushes || brush !== "ink";
+  nibOnly.hidden = !brushes || brush !== "nib";
 }
 
 /**
@@ -651,6 +664,30 @@ async function start(): Promise<void> {
     const roughness = Number(edgeRoughnessInput.value) / 100;
     edgeRoughnessValue.textContent = `${Math.round(roughness * 100)}%`;
     queueBrush({ edgeRoughness: roughness });
+  });
+
+  taperInput.addEventListener("input", () => {
+    const fraction = Number(taperInput.value) / 100;
+    taperValue.textContent = `${Math.round(fraction * 100)}%`;
+    queueBrush({ taperFraction: fraction });
+  });
+
+  pressureInput.addEventListener("input", () => {
+    const pressure = Number(pressureInput.value) / 100;
+    pressureValue.textContent = `${Math.round(pressure * 100)}%`;
+    queueBrush({ pressure });
+  });
+
+  nibAngleInput.addEventListener("input", () => {
+    const degrees = Number(nibAngleInput.value);
+    nibAngleValue.textContent = `${degrees}°`;
+    queueBrush({ nibAngleDegrees: degrees });
+  });
+
+  nibContrastInput.addEventListener("input", () => {
+    const contrast = Number(nibContrastInput.value) / 100;
+    nibContrastValue.textContent = `${Math.round(contrast * 100)}%`;
+    queueBrush({ nibContrast: contrast });
   });
 
   brushInput.addEventListener("change", () => {

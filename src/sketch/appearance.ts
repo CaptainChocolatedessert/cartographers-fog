@@ -131,9 +131,9 @@ const RENDERERS: readonly Renderer[] = ["strokes", "shader"];
  * adds procedural grain — see `sdf.ts`, `SdfGrain`, including why it must be computed rather than
  * sampled from a texture.
  */
-export type BrushId = "liner" | "charcoal";
+export type BrushId = "liner" | "charcoal" | "ink" | "nib";
 
-export const BRUSHES: readonly BrushId[] = ["liner", "charcoal"];
+export const BRUSHES: readonly BrushId[] = ["liner", "charcoal", "ink", "nib"];
 
 /**
  * One brush's own settings, **stored per brush**.
@@ -154,6 +154,33 @@ export interface BrushSettings {
   readonly grainDepth: number;
   /** How ragged the silhouette is, as a fraction of the half-width. */
   readonly edgeRoughness: number;
+  /**
+   * Nib angle in **degrees**, 0–180. Nib only.
+   *
+   * Degrees because this is the one setting a GM might reason about numerically — 30° and 45° are
+   * the conventional italic hands — and radians would make that guesswork. Converted once at the
+   * point of use.
+   *
+   * The range stops at 180 because a nib is an edge, not an arrow: holding it at 200° is holding it
+   * at 20°, and offering the duplicate half only makes the slider harder to aim.
+   */
+  readonly nibAngleDegrees: number;
+  /**
+   * How thin the nib's hairline gets, as a fraction of full width. **Zero is maximum contrast.**
+   *
+   * At 1 the nib becomes a round pen and the angle stops meaning anything — worth being able to
+   * reach, because it is the honest comparison for judging whether the angle is doing any good.
+   */
+  readonly nibContrast: number;
+  /**
+   * How much of each end of a stroke tapers, as a fraction of the whole contour's length. Ink only.
+   *
+   * Of the **contour**, which is the whole reason `SegmentProvenance` exists — tapering per masking
+   * segment would make every cut look like a brush lift.
+   */
+  readonly taperFraction: number;
+  /** How much the ink brush's width wanders along a stroke, 0–1. Zero is an even mark. */
+  readonly pressure: number;
 }
 
 /**
@@ -194,6 +221,10 @@ export const DEFAULT_APPEARANCE: Appearance = {
       grainScaleSquares: 0.05,
       grainDepth: 0,
       edgeRoughness: 0,
+      nibAngleDegrees: 40,
+      nibContrast: 0.15,
+      taperFraction: 0.15,
+      pressure: 0.35,
     },
     // **Tuned by eye in a room and judged good** (user, 2026-08-01) — not a starting guess. Changing
     // these changes what every table using charcoal sees on its next reload.
@@ -207,6 +238,36 @@ export const DEFAULT_APPEARANCE: Appearance = {
       grainScaleSquares: 0.09,
       grainDepth: 0.6,
       edgeRoughness: 0.85,
+      nibAngleDegrees: 40,
+      nibContrast: 0.15,
+      taperFraction: 0.15,
+      pressure: 0.35,
+    },
+    // Soft-edged with a pronounced taper, which is what separates a loaded brush from a felt tip.
+    // **Unjudged** — chosen to make the medium legible at first sight, not because they are right.
+    ink: {
+      featherFraction: 0.45,
+      grainScaleSquares: 0.09,
+      grainDepth: 0,
+      edgeRoughness: 0,
+      nibAngleDegrees: 40,
+      nibContrast: 0.15,
+      taperFraction: 0.2,
+      pressure: 0.4,
+    },
+    // Nearly hard-edged, because a nib is a pen and softness reads as bleed rather than as ink.
+    // 40° is a conventional italic hand; the low contrast keeps a real hairline without losing it.
+    // No taper and no pressure: a nib's variation comes from direction alone, and adding the other
+    // two would make it an ink brush wearing a different label.
+    nib: {
+      featherFraction: 0.12,
+      grainScaleSquares: 0.09,
+      grainDepth: 0,
+      edgeRoughness: 0,
+      nibAngleDegrees: 40,
+      nibContrast: 0.12,
+      taperFraction: 0,
+      pressure: 0,
     },
   },
 };
@@ -236,6 +297,19 @@ export const MAX_FEATHER_FRACTION = 1;
 export const MIN_GRAIN_SCALE_SQUARES = 0.01;
 export const MAX_GRAIN_SCALE_SQUARES = 0.3;
 export const MAX_EDGE_ROUGHNESS = 1;
+
+/**
+ * Nib and ink bounds.
+ *
+ * The angle stops at 180° because a nib is an *edge*, not an arrow — holding it at 200° is holding
+ * it at 20°, and offering the duplicate half only makes the slider harder to aim.
+ *
+ * The taper ceiling is a half because taper is applied from both ends at once: at 0.5 the two ramps
+ * meet in the middle and the stroke never reaches full width, which is where the control stops
+ * meaning "taper" and starts meaning "thin".
+ */
+export const MAX_NIB_ANGLE_DEGREES = 180;
+export const MAX_TAPER_FRACTION = 0.5;
 
 /**
  * Width bounds, in grid squares.
@@ -406,6 +480,20 @@ function readBrushes(
         MAX_EDGE_ROUGHNESS,
         fallback.edgeRoughness,
       ),
+      nibAngleDegrees: readClamped(
+        fields.nibAngleDegrees,
+        0,
+        MAX_NIB_ANGLE_DEGREES,
+        fallback.nibAngleDegrees,
+      ),
+      nibContrast: readClamped(fields.nibContrast, 0, 1, fallback.nibContrast),
+      taperFraction: readClamped(
+        fields.taperFraction,
+        0,
+        MAX_TAPER_FRACTION,
+        fallback.taperFraction,
+      ),
+      pressure: readClamped(fields.pressure, 0, 1, fallback.pressure),
     };
   }
   return out;
@@ -519,6 +607,10 @@ function brushDiffers(before: BrushSettings, after: BrushSettings): boolean {
     before.featherFraction !== after.featherFraction ||
     before.grainScaleSquares !== after.grainScaleSquares ||
     before.grainDepth !== after.grainDepth ||
-    before.edgeRoughness !== after.edgeRoughness
+    before.edgeRoughness !== after.edgeRoughness ||
+    before.nibAngleDegrees !== after.nibAngleDegrees ||
+    before.nibContrast !== after.nibContrast ||
+    before.taperFraction !== after.taperFraction ||
+    before.pressure !== after.pressure
   );
 }

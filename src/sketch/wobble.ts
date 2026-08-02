@@ -29,7 +29,7 @@
  * Pure: no DOM, no SDK.
  */
 
-import { pointAtLength, polylineLength, type TracedSegment } from "../trace/chop";
+import { reshapeSegment, type TracedSegment } from "../trace/chop";
 import type { Vector2 } from "../geometry/vector";
 
 export interface WobbleOptions {
@@ -72,8 +72,11 @@ export function wobbleSegment(
   // Recomputed rather than displaced, so the invariant `chop.ts` documents still holds: the
   // midpoint is the point at half the *drawn* arc length. Masking tests this point, so it
   // should describe where the ink actually ended up.
-  const length = polylineLength(points);
-  return { points, midpoint: pointAtLength(points, length / 2), length };
+  //
+  // Via `reshapeSegment` so the segment's provenance survives. Wobbling moves and multiplies the
+  // points but changes nothing about *which stroke* they came from or where along it they sit —
+  // and rebuilding the object literally here is precisely how that got dropped before.
+  return reshapeSegment(segment, points);
 }
 
 /**

@@ -25,7 +25,7 @@
  */
 
 import type { Bounds } from "../region/cellGrid";
-import type { TracedSegment } from "../trace/chop";
+import type { SegmentProvenance, TracedSegment } from "../trace/chop";
 import type { Vector2 } from "../geometry/vector";
 
 export interface TracePlacement {
@@ -182,6 +182,12 @@ export function toWorldSegment(
     points: segment.points.map((point) => toWorldPoint(point, placement)),
     midpoint: toWorldPoint(segment.midpoint, placement),
     length: segment.length * placement.unitsPerPixel.x,
+    // Carried, not recomputed. `reshapeSegment` is not used here because it would re-derive the
+    // length from the world points, and this deliberately scales the pixel length by the x factor
+    // alone — see the note above about per-axis scaling having no single length conversion.
+    ...(segment.provenance
+      ? { provenance: segment.provenance satisfies SegmentProvenance }
+      : {}),
   };
 }
 

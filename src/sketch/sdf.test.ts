@@ -12,7 +12,11 @@ import {
   type Piece,
   type SdfStyle,
 } from "./sdf";
+import { BRUSHES } from "./appearance";
 import type { TracedSegment } from "../trace/chop";
+
+/** Every brush, so a new one cannot be added without the shared invariants being checked. */
+const BRUSH_IDS = BRUSHES;
 
 const STYLE: SdfStyle = {
   halfWidth: 6,
@@ -290,7 +294,7 @@ describe("sdfSource", () => {
     }
     expect(source).not.toContain(`p${batchSize}a`);
     expect(count(source, "uniform float2 p")).toBe(batchSize * 2);
-    expect(count(source, "d = min(d,")).toBe(batchSize);
+    expect(count(source, "sd = min(sd,")).toBe(batchSize);
   });
 
   it("is identical for the same batch size", () => {
@@ -314,7 +318,11 @@ describe("sdfSource", () => {
 
   it("feathers the edge rather than cutting it", () => {
     // The entire reason this renderer exists — a `Path` has a hard silhouette and cannot soften it.
-    expect(sdfSource(4)).toContain("smoothstep(halfWidth - e, halfWidth + e, d)");
+    // Thresholded at zero on a signed distance, which is what lets a constant-width brush and a
+    // varying-width one share one alpha ramp. Algebraically identical to the old
+    // `smoothstep(halfWidth - e, halfWidth + e, d)` — both reduce to (d - halfWidth + e) / 2e.
+    expect(sdfSource(4)).toContain("sd -= halfWidth;");
+    expect(sdfSource(4)).toContain("smoothstep(-e, e, sd)");
   });
 
   it("rejects a batch size below one", () => {
@@ -339,17 +347,15 @@ describe("brushes", () => {
     return names;
   }
 
-  it.each([
-    ["liner", STYLE],
-    ["charcoal", grainy],
-  ] as const)(
+  it.each(BRUSH_IDS)(
     "%s supplies exactly the uniforms its source declares",
-    (brush, style) => {
+    (brush) => {
+      const style = brush === "charcoal" ? grainy : STYLE;
       // Bidirectional on purpose, because both mismatches fail *silently*: a uniform the shader
       // never declares is ignored, and one declared but never supplied leaves the effect drawing
       // nothing. Neither throws, so nothing but a test catches them.
       const supplied = new Set(
-        buildUniforms(pieces, bounds, style, 4).map((u) => u.name),
+        buildUniforms(pieces, bounds, style, 4, brush).map((u) => u.name),
       );
 
       expect(supplied).toEqual(declared(sdfSource(4, brush)));
@@ -383,7 +389,7 @@ describe("brushes", () => {
     // from the top of the file instead catches `fbm2`'s own definition, which proves nothing.
     const source = sdfSource(32, "charcoal");
     const chain = source.slice(
-      source.indexOf("float d = 1000000.0;"),
+      source.indexOf("float sd = 1000000.0;"),
       source.indexOf("float e = max(feather"),
     );
 
@@ -408,7 +414,7 @@ describe("brushes", () => {
     // Displacing the threshold is what reads as a dry medium. Multiplying alpha alone gives a
     // clean-edged shape with a grubby interior, which looks like a textured sticker.
     expect(sdfSource(4, "charcoal")).toContain(
-      "smoothstep(halfWidth - e + bump, halfWidth + e + bump, d)",
+      "smoothstep(-e + bump, e + bump, sd)",
     );
   });
 
@@ -428,6 +434,117 @@ describe("brushes", () => {
     const scale = zeroed.find((u) => u.name === "grainScale")!.value as number;
 
     expect(scale).not.toBe(0);
+  });
+});
+
+describe("varying width", () => {
+  const wide: Piece[] = [
+    { a: { x: 0, y: 0 }, b: { x: 50, y: 0 }, wa: 3, wb: 7 },
+    { a: { x: 50, y: 0 }, b: { x: 50, y: 50 }, wa: 7, wb: 2 },
+  ];
+  const bounds = batchBounds(wide, 8);
+
+  it("carries per-point widths from segments into pieces", () => {
+    // Pieces are consecutive, so each shares a width with its neighbour at the joining point. If
+    // they did not, the mark would step at every subdivision vertex.
+    const segments = [
+      {
+        points: [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+          { x: 20, y: 0 },
+        ],
+        midpoint: { x: 10, y: 0 },
+        length: 20,
+      },
+    ];
+
+    const pieces = toPieces(segments, [[1, 2, 3]]);
+
+    expect(pieces).toHaveLength(2);
+    expect([pieces[0]!.wa, pieces[0]!.wb]).toEqual([1, 2]);
+    expect([pieces[1]!.wa, pieces[1]!.wb]).toEqual([2, 3]);
+    expect(pieces[0]!.wb).toBe(pieces[1]!.wa);
+  });
+
+  it("falls back to constant width when widths are missing or short", () => {
+    // A widths array that is short or misaligned must not silently draw part of the sketch at zero
+    // thickness — an absent entry means "no opinion", not "no ink".
+    const segments = [
+      {
+        points: [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+        ],
+        midpoint: { x: 5, y: 0 },
+        length: 10,
+      },
+    ];
+
+    expect(toPieces(segments)[0]!.wa).toBeUndefined();
+    expect(toPieces(segments, [])[0]!.wa).toBeUndefined();
+    expect(toPieces(segments, [[1]])[0]!.wa).toBeUndefined();
+  });
+
+  it.each(["nib", "ink"] as const)(
+    "%s declares and supplies a width pair per slot",
+    (brush) => {
+      const source = sdfSource(4, brush);
+      const supplied = new Set(
+        buildUniforms(wide, bounds, STYLE, 4, brush).map((u) => u.name),
+      );
+
+      for (let i = 0; i < 4; i++) {
+        expect(source).toContain(`uniform float2 w${i};`);
+        expect(source).toContain(`sdCone(w, p${i}a, p${i}b, w${i})`);
+        expect(supplied.has(`w${i}`)).toBe(true);
+      }
+    },
+  );
+
+  it.each(["liner", "charcoal"] as const)(
+    "%s pays nothing for width it does not vary",
+    (brush) => {
+      // Per-slot cost is the dominant cost of the renderer, so a brush of one thickness must not
+      // carry the extra uniform or the extra `mix` — the loop runs batchSize times per pixel.
+      const source = sdfSource(4, brush);
+      const supplied = buildUniforms(wide, bounds, STYLE, 4, brush).map((u) => u.name);
+
+      expect(source).not.toContain("uniform float2 w0;");
+      expect(source).not.toContain("sdCone");
+      expect(supplied).not.toContain("w0");
+    },
+  );
+
+  it("gives a parked slot a finite width", () => {
+    // A parked slot can never win the minimum, but a NaN there would poison the `min` chain for
+    // every pixel in the batch — the mark would vanish entirely rather than degrade.
+    const uniforms = buildUniforms(wide, bounds, STYLE, 8, "ink");
+    const parked = uniforms.find((u) => u.name === "w7")!.value as {
+      x: number;
+      y: number;
+    };
+
+    expect(Number.isFinite(parked.x)).toBe(true);
+    expect(Number.isFinite(parked.y)).toBe(true);
+  });
+
+  it("subtracts the radius inside the chain, not after it", () => {
+    // A varying-width brush has no single half-width to subtract at the end, so the chain must
+    // already be signed. Subtracting `halfWidth` as well would shift the whole mark.
+    const source = sdfSource(4, "ink");
+
+    expect(source).not.toContain("sd -= halfWidth;");
+    expect(source).toContain("mix(r.x, r.y, h)");
+  });
+
+  it("keeps one alpha ramp for both shapes", () => {
+    // Constant and varying width share `smoothstep(-e, e, sd)`. That is what let the unification
+    // happen without touching the judged liner and charcoal looks.
+    for (const brush of BRUSH_IDS) {
+      const body = sdfSource(4, brush);
+      expect(body).toMatch(/smoothstep\(-e(?: \+ bump)?, e(?: \+ bump)?, sd\)/);
+    }
   });
 });
 

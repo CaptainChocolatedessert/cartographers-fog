@@ -44,6 +44,15 @@ import type { Vector2 } from "../geometry/vector";
 export interface Piece {
   readonly a: Vector2;
   readonly b: Vector2;
+  /**
+   * Half-width at each end, for brushes whose mark is not one thickness.
+   *
+   * Absent for the liner and charcoal, which use the single `halfWidth` uniform. When present the
+   * shader interpolates between the two along the piece, using the projection parameter it already
+   * computes to measure distance — so continuous width costs one `mix` and nothing else.
+   */
+  readonly wa?: number;
+  readonly wb?: number;
 }
 
 /** A world-space axis-aligned box. The rectangle an `Effect` is given to shade. */
@@ -114,14 +123,27 @@ export interface SdfGrain {
  * measures distance to straight pieces, so this is where the two representations meet. Order is
  * preserved because the caller masks by index — see `mask.ts`, `SketchSelection.indices`.
  */
-export function toPieces(segments: readonly TracedSegment[]): Piece[] {
+export function toPieces(
+  segments: readonly TracedSegment[],
+  widths?: readonly (readonly number[])[],
+): Piece[] {
   const pieces: Piece[] = [];
-  for (const segment of segments) {
+  segments.forEach((segment, index) => {
     const points = segment.points;
+    // Index-aligned with `segments`, exactly as `SketchSelection.indices` is. A widths array that
+    // is short or misaligned would silently draw part of the sketch at the wrong thickness, so a
+    // missing entry falls back to the constant width rather than to zero.
+    const perPoint = widths?.[index];
     for (let i = 0; i + 1 < points.length; i++) {
-      pieces.push({ a: points[i]!, b: points[i + 1]! });
+      const wa = perPoint?.[i];
+      const wb = perPoint?.[i + 1];
+      pieces.push(
+        wa !== undefined && wb !== undefined
+          ? { a: points[i]!, b: points[i + 1]!, wa, wb }
+          : { a: points[i]!, b: points[i + 1]! },
+      );
     }
-  }
+  });
   return pieces;
 }
 
@@ -255,6 +277,7 @@ export function buildUniforms(
   bounds: Bounds,
   style: SdfStyle,
   batchSize: number,
+  brush: BrushId = "liner",
 ): ShaderUniform[] {
   if (pieces.length > batchSize) {
     throw new Error(`batch of ${pieces.length} exceeds batchSize ${batchSize}`);
@@ -291,10 +314,20 @@ export function buildUniforms(
     );
   }
 
+  const { varyingWidth } = brushFeatures(brush);
+
   for (let i = 0; i < batchSize; i++) {
     const piece = pieces[i];
     uniforms.push({ name: `p${i}a`, value: piece ? { ...piece.a } : parked });
     uniforms.push({ name: `p${i}b`, value: piece ? { ...piece.b } : parked });
+    if (varyingWidth) {
+      // A parked slot's width is irrelevant — it can never win the minimum — but it must be a
+      // finite number, since a NaN would poison the whole `min` chain for every pixel.
+      uniforms.push({
+        name: `w${i}`,
+        value: { x: piece?.wa ?? style.halfWidth, y: piece?.wb ?? style.halfWidth },
+      });
+    }
   }
 
   return uniforms;
@@ -338,17 +371,46 @@ function nonZero(value: number): number {
  * gives a genuinely soft edge, re-evaluated per screen pixel at the current zoom, so it stays smooth
  * however far in the view goes. Nothing is stored as a bitmap.
  */
+/**
+ * What a brush needs from the shader — **the single source of truth for both halves.**
+ *
+ * `sdfSource` decides what the program declares and `buildUniforms` decides what it is given, and
+ * a disagreement between them fails silently in both directions: an undeclared uniform is ignored,
+ * and a declared one never supplied leaves the effect drawing nothing. Neither throws. Deriving
+ * both from this one function is what makes them impossible to drift apart, and a test asserts the
+ * two sets are equal for every brush.
+ *
+ * The two features are independent by construction rather than by enumeration, so a future brush
+ * wanting grain *and* varying width — a dry-brush ink, say — costs nothing to express.
+ */
+export function brushFeatures(brush: BrushId): {
+  readonly grain: boolean;
+  readonly varyingWidth: boolean;
+} {
+  return {
+    grain: brush === "charcoal",
+    varyingWidth: brush === "nib" || brush === "ink",
+  };
+}
+
 export function sdfSource(batchSize: number, brush: BrushId = "liner"): string {
   if (batchSize < 1) throw new Error(`batchSize must be at least 1, got ${batchSize}`);
+
+  const { grain, varyingWidth } = brushFeatures(brush);
 
   const declarations: string[] = [];
   const chain: string[] = [];
   for (let i = 0; i < batchSize; i++) {
-    declarations.push(`uniform float2 p${i}a;\nuniform float2 p${i}b;`);
-    chain.push(`  d = min(d, sdSeg(w, p${i}a, p${i}b));`);
+    declarations.push(
+      `uniform float2 p${i}a;\nuniform float2 p${i}b;` +
+        (varyingWidth ? `\nuniform float2 w${i};` : ""),
+    );
+    chain.push(
+      varyingWidth
+        ? `  sd = min(sd, sdCone(w, p${i}a, p${i}b, w${i}));`
+        : `  sd = min(sd, sdSeg(w, p${i}a, p${i}b));`,
+    );
   }
-
-  const grain = brush === "charcoal";
 
   return `uniform float2 size;
 uniform float2 worldMin;
@@ -358,26 +420,58 @@ uniform float feather;
 uniform float3 ink;
 ${grain ? GRAIN_UNIFORMS : ""}${declarations.join("\n")}
 
-float sdSeg(float2 p, float2 a, float2 b) {
-  float2 pa = p - a;
-  float2 ba = b - a;
-  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
-  return length(pa - ba * h);
-}
-${grain ? NOISE_FUNCTIONS : ""}
+${varyingWidth ? CONE_DISTANCE : SEGMENT_DISTANCE}${grain ? NOISE_FUNCTIONS : ""}
 half4 main(float2 coord) {
   float2 w = worldMin + (coord / size) * worldSpan;
 
-  float d = 1000000.0;
+  float sd = 1000000.0;
 ${chain.join("\n")}
-
+${varyingWidth ? "" : "  sd -= halfWidth;\n"}
   float e = max(feather, 0.0001);
-${grain ? CHARCOAL_BODY : LINER_BODY}
+${grain ? CHARCOAL_BODY : PLAIN_BODY}
 
   return half4(ink.x * a, ink.y * a, ink.z * a, a);
 }
 `;
 }
+
+/**
+ * Distance to a straight piece of constant width.
+ *
+ * `halfWidth` is subtracted once in `main` rather than inside the chain, so the loop body stays as
+ * short as it can be — it runs `batchSize` times per pixel and is the dominant cost of the whole
+ * renderer.
+ */
+const SEGMENT_DISTANCE = `float sdSeg(float2 p, float2 a, float2 b) {
+  float2 pa = p - a;
+  float2 ba = b - a;
+  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+`;
+
+/**
+ * Signed distance to a piece whose half-width runs from `r.x` to `r.y` along it.
+ *
+ * The projection parameter `h` is computed anyway to measure distance, so interpolating the radius
+ * by it is very nearly free — one `mix` and one subtraction. That is what makes continuous width
+ * affordable at all here.
+ *
+ * **This is the cheap approximation, not the exact round-cone field.** A true varying-radius SDF
+ * accounts for the slope of the radius change, which tilts the surface near a rapid taper; this
+ * treats the radius as constant *at* the sample's projection. The error scales with how fast the
+ * radius changes along one piece — and pieces here are short, because `chop.ts` cuts for masking
+ * and `wobble.ts` subdivides again, so the width barely moves across any single one. Exactness
+ * would cost several more operations in the hottest loop in the project to fix an error nothing
+ * can see.
+ */
+const CONE_DISTANCE = `float sdCone(float2 p, float2 a, float2 b, float2 r) {
+  float2 pa = p - a;
+  float2 ba = b - a;
+  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+  return length(pa - ba * h) - mix(r.x, r.y, h);
+}
+`;
 
 const GRAIN_UNIFORMS = `uniform float grainScale;
 uniform float grainDepth;
@@ -420,7 +514,15 @@ float fbm2(float2 p) {
 }
 `;
 
-const LINER_BODY = `  float a = 1.0 - smoothstep(halfWidth - e, halfWidth + e, d);`;
+/**
+ * Plain edge — used by every brush without grain.
+ *
+ * Thresholded at zero because `sd` is already signed: negative inside the mark, positive outside.
+ * That is what lets a constant-width brush and a varying-width one share one alpha ramp, and it is
+ * exactly equivalent to the old `smoothstep(halfWidth - e, halfWidth + e, d)` — both reduce to
+ * `(d - halfWidth + e) / 2e`, so nothing about the judged liner or charcoal look changes.
+ */
+const PLAIN_BODY = `  float a = 1.0 - smoothstep(-e, e, sd);`;
 
 /**
  * Charcoal: displace the threshold, then mottle the density.
@@ -438,7 +540,7 @@ const LINER_BODY = `  float a = 1.0 - smoothstep(halfWidth - e, halfWidth + e, d
  * mottle would line up with the edge breaks and beat against them visibly.
  */
 const CHARCOAL_BODY = `  float bump = (fbm2(w / grainScale) - 0.5) * edgeRoughness * halfWidth;
-  float a = 1.0 - smoothstep(halfWidth - e + bump, halfWidth + e + bump, d);
+  float a = 1.0 - smoothstep(-e + bump, e + bump, sd);
   a *= mix(1.0 - grainDepth, 1.0, fbm2(w / grainScale * 2.7 + 31.7));`;
 
 /** `#rrggbb` to linear 0–1 components, for the `ink` uniform. Falls back to black on nonsense. */

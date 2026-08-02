@@ -72,19 +72,28 @@ describe("fromRoomMetadata", () => {
       pencilScatterSquares: 0.03,
       renderer: "shader",
       brush: "charcoal",
+      // Written as overrides on the defaults rather than spelled out in full: the stored object
+      // above sets only the fields a GM would have touched, and every brush carries the same
+      // uniform shape, so listing all of them here would make this test fail whenever an unrelated
+      // brush gained a field.
       brushes: {
         liner: {
+          ...DEFAULT_APPEARANCE.brushes.liner,
           featherFraction: 0.4,
           grainScaleSquares: 0.05,
           grainDepth: 0,
           edgeRoughness: 0,
         },
         charcoal: {
+          ...DEFAULT_APPEARANCE.brushes.charcoal,
           featherFraction: 0.5,
           grainScaleSquares: 0.06,
           grainDepth: 0.4,
           edgeRoughness: 0.7,
         },
+        // Absent from the stored object entirely, so these must be the shipped defaults.
+        ink: DEFAULT_APPEARANCE.brushes.ink,
+        nib: DEFAULT_APPEARANCE.brushes.nib,
       },
     });
   });
@@ -282,12 +291,14 @@ describe("brushes", () => {
     // Tuned by eye 2026-08-01 and accepted. Pinned for the same reason the ink colour and stroke
     // width are: changing a judged default changes what every table sees on its next reload, so it
     // should be a deliberate edit that breaks a test rather than a quiet one that does not.
-    expect(DEFAULT_APPEARANCE.brushes.charcoal).toEqual({
-      featherFraction: 0.5,
-      grainScaleSquares: 0.09,
-      grainDepth: 0.6,
-      edgeRoughness: 0.85,
-    });
+    // Only the fields charcoal actually obeys. The settings record is a uniform shape across every
+    // brush, so pinning the whole object would make this fail whenever an unrelated brush's
+    // defaults were tuned — a test that breaks for the wrong reason stops being read.
+    const charcoal = DEFAULT_APPEARANCE.brushes.charcoal;
+    expect(charcoal.featherFraction).toBe(0.5);
+    expect(charcoal.grainScaleSquares).toBe(0.09);
+    expect(charcoal.grainDepth).toBe(0.6);
+    expect(charcoal.edgeRoughness).toBe(0.85);
   });
 
   it("gives every brush a full settings block", () => {

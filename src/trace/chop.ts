@@ -28,6 +28,62 @@ export interface TracedSegment {
   /** The point at half the segment's arc length: what masking tests. */
   readonly midpoint: Vector2;
   readonly length: number;
+  /**
+   * Where this piece came from, and where along it.
+   *
+   * **Cutting for masking destroys the notion of a stroke, and some brushes need it back.** A brush
+   * that tapers — an ink brush thinning to nothing at the start and end of a mark — must taper at
+   * the ends of the *original contour*, not at the ends of every masking segment. Tapering each
+   * segment would turn a continuous wall into a row of dashes, which looks like a rendering fault
+   * rather than a brush.
+   *
+   * So the cut records what it is destroying. `contour` identifies the source stroke, and the two
+   * fractions say what part of its arc length this piece spans, 0 at the contour's start and 1 at
+   * its end. `sketch/brushWidths.ts` is the only consumer.
+   *
+   * Optional because the field arrived late and every fixture predating it is still valid — a
+   * segment without provenance simply cannot be tapered, and the brushes that do not taper never
+   * look.
+   */
+  readonly provenance?: SegmentProvenance;
+}
+
+export interface SegmentProvenance {
+  /** Index of the source contour. Pieces of one stroke share it. */
+  readonly contour: number;
+  /** Normalised arc position of the first point along that contour, 0–1. */
+  readonly startFraction: number;
+  /** ...and of the last point. Always greater than `startFraction`. */
+  readonly endFraction: number;
+  /**
+   * Whether the source contour was a closed loop.
+   *
+   * A loop has no ends, so tapering it would put a spurious thin patch at the arbitrary point the
+   * tracer happened to start walking. Brushes must leave closed contours at full width.
+   */
+  readonly closed: boolean;
+}
+
+/**
+ * Rebuild a segment around new points, carrying its provenance.
+ *
+ * Every stage after `chop` rewrites points — `placement` maps them to world space, `wobble`
+ * subdivides and displaces them, `pencil` offsets them — and each rebuilt the segment literally,
+ * which silently dropped anything added here. This is the one place that knows the invariant
+ * (`midpoint` is the point at half the *drawn* arc length) and the one place that has to remember
+ * the new field, so both live together.
+ */
+export function reshapeSegment(
+  segment: TracedSegment,
+  points: readonly Vector2[],
+): TracedSegment {
+  const length = polylineLength(points);
+  return {
+    points,
+    midpoint: pointAtLength(points, length / 2),
+    length,
+    ...(segment.provenance ? { provenance: segment.provenance } : {}),
+  };
 }
 
 export function chopContours(
@@ -35,9 +91,9 @@ export function chopContours(
   maxLength: number,
 ): TracedSegment[] {
   const out: TracedSegment[] = [];
-  for (const contour of contours) {
-    chopContour(contour, maxLength, out);
-  }
+  contours.forEach((contour, index) => {
+    chopContour(contour, maxLength, out, index);
+  });
   return out;
 }
 
@@ -45,6 +101,7 @@ export function chopContour(
   contour: Contour,
   maxLength: number,
   into: TracedSegment[] = [],
+  contourIndex = 0,
 ): TracedSegment[] {
   const points =
     contour.closed && contour.points.length > 1
@@ -54,6 +111,12 @@ export function chopContour(
   if (points.length < 2) return into;
 
   const budget = maxLength > 0 ? maxLength : Infinity;
+
+  // Total arc length of the *whole* contour, measured before any cutting, so each piece can say
+  // where along the original stroke it sits. A zero-length contour would divide by zero; it also
+  // cannot emit anything, so the guard costs nothing.
+  const contourLength = polylineLength(points);
+  let consumed = 0;
 
   let current: Vector2[] = [points[0]!];
   let accumulated = 0;
@@ -83,7 +146,7 @@ export function chopContour(
         current.push(from);
       }
 
-      emit(into, current);
+      consumed = emit(into, current, contourIndex, consumed, contourLength, contour.closed);
       current = [from];
       accumulated = 0;
       remaining = distance(from, to);
@@ -93,17 +156,48 @@ export function chopContour(
     accumulated += remaining;
   }
 
-  emit(into, current);
+  emit(into, current, contourIndex, consumed, contourLength, contour.closed);
   return into;
 }
 
-function emit(into: TracedSegment[], points: Vector2[]): void {
-  if (points.length < 2) return;
+/**
+ * Append one piece, recording where along its source contour it lies.
+ *
+ * @returns the arc length consumed so far, so the caller can hand it back for the next piece. A
+ * running total threaded through the return value rather than a mutable field, because the cut
+ * loop already has three pieces of state and a fourth hidden one is how this sort of code goes
+ * wrong.
+ */
+function emit(
+  into: TracedSegment[],
+  points: Vector2[],
+  contour: number,
+  consumed: number,
+  contourLength: number,
+  closed: boolean,
+): number {
+  if (points.length < 2) return consumed;
 
   const length = polylineLength(points);
-  if (length === 0) return;
+  if (length === 0) return consumed;
 
-  into.push({ points, midpoint: pointAtLength(points, length / 2), length });
+  const scale = contourLength > 0 ? 1 / contourLength : 0;
+  into.push({
+    points,
+    midpoint: pointAtLength(points, length / 2),
+    length,
+    provenance: {
+      contour,
+      startFraction: consumed * scale,
+      // Clamped: floating-point accumulation over many pieces can carry the last one a hair past
+      // 1, and a taper profile fed 1.0000001 would report the stroke's final piece as beyond its
+      // own end.
+      endFraction: Math.min(1, (consumed + length) * scale),
+      closed,
+    },
+  });
+
+  return consumed + length;
 }
 
 export function polylineLength(points: readonly Vector2[]): number {
