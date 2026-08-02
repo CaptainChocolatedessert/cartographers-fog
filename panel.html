@@ -321,14 +321,14 @@
               <!--
                 How much wider the stroke starts — a brush lands before it travels. 100% is no blob.
               -->
-              <input type="range" id="entryBulge" min="100" max="250" step="5" value="145" />
-              <output id="entryBulgeValue">145%</output>
+              <input type="range" id="entryBulge" min="100" max="250" step="5" value="130" />
+              <output id="entryBulgeValue">130%</output>
             </div>
             <div class="row">
               <label for="pressure">Pressure</label>
               <!-- Slow variation along the stroke. Zero is a mark of perfectly even weight. -->
-              <input type="range" id="pressure" min="0" max="100" step="5" value="40" />
-              <output id="pressureValue">40%</output>
+              <input type="range" id="pressure" min="0" max="100" step="5" value="75" />
+              <output id="pressureValue">75%</output>
             </div>
             <div class="row">
               <label for="taper">Lift</label>
@@ -468,7 +468,7 @@
         <div id="parchmentControls" hidden>
           <div class="row">
             <label for="parchmentColor">Tint</label>
-            <input type="color" id="parchmentColor" value="#D8C49A" />
+            <input type="color" id="parchmentColor" value="#4A3520" />
           </div>
           <div class="row">
             <label for="parchmentOpacity">Strength</label>
@@ -478,20 +478,20 @@
               fog underneath is doing the colouring and this only mottles it. Tenths because the
               judged value is 5.5% and whole percent could not express it.
             -->
-            <input type="range" id="parchmentOpacity" min="0" max="600" step="1" value="55" />
-            <output id="parchmentOpacityValue">5.5%</output>
+            <input type="range" id="parchmentOpacity" min="0" max="600" step="1" value="160" />
+            <output id="parchmentOpacityValue">16.0%</output>
           </div>
           <div class="row">
             <label for="parchmentScale">Blotch size</label>
             <!-- Hundredths of a grid square. Far coarser than charcoal's grain — different scales
                  of thing, and tuning them to match makes both look wrong. -->
-            <input type="range" id="parchmentScale" min="5" max="300" step="1" value="33" />
-            <output id="parchmentScaleValue">0.33</output>
+            <input type="range" id="parchmentScale" min="5" max="300" step="1" value="150" />
+            <output id="parchmentScaleValue">1.50</output>
           </div>
           <div class="row">
             <label for="parchmentContrast">Variation</label>
-            <input type="range" id="parchmentContrast" min="0" max="100" step="5" value="70" />
-            <output id="parchmentContrastValue">70%</output>
+            <input type="range" id="parchmentContrast" min="0" max="100" step="5" value="60" />
+            <output id="parchmentContrastValue">60%</output>
           </div>
         </div>
       </div>

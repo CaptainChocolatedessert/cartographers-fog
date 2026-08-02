@@ -1557,6 +1557,19 @@ The panel says **"Color", not "Ink"**, since charcoal is not ink and a label nam
 as wrong under any brush that is not that medium. The stored key remains `strokeColor`; renaming it
 would lose the colour of every room that has written one.
 
+###### Colour is shared, and there is now evidence it should not be
+
+`strokeColor` is one value for every brush, decided when brushes were introduced on the judgment
+that colour describes the mark whatever draws it. Tuning since then points the other way: the ink
+brush was judged good specifically **in black** (2026-08-02), while charcoal and the liner were
+judged in the shipped sepia. So comparing brushes now means re-picking the colour by hand each time,
+and no brush's judged look can be stored in full.
+
+Moving `strokeColor` into `BrushSettings` would fix it, at the cost of a migration — seed every
+brush from the existing top-level value, exactly as `featherFraction` was seeded onto the liner —
+and of a GM having to set the colour more than once when they *do* want it uniform. **Not done.**
+Recorded so the next person deciding does not have to rediscover the evidence.
+
 ##### Brushes — ink and nib, built 2026-08-01, UNJUDGED
 
 Both needed the same new capability, which is why they were built together: **width that varies
@@ -1610,7 +1623,12 @@ Two smaller decisions worth not re-deriving:
   *places* and visibly tore the stroke apart, here the point stays put and only its width differs,
   by a fraction of a percent on geometry the wobble has already subdivided.
 
-**Judged 2026-08-01: the nib is good, the ink brush needed rework** — the expectation above held.
+**Judged: the nib is good (2026-08-01), and the ink brush is good after rework (2026-08-02)** — the
+expectation above held on the first attempt, and the fix was structural rather than tuning.
+
+Ink ships at edge 45%, entry 130%, pressure 75%, lift 25%, tail 45%. Note the judged look pairs
+those with a **black** stroke colour rather than the shipped sepia — and colour is *shared* across
+brushes, so that cannot be encoded as a brush default. See "Colour is shared" below.
 
 ##### The ink profile is asymmetric, and never reaches zero
 
@@ -1681,10 +1699,16 @@ and the split reported nothing. **A diagnostic must be able to produce a partial
 cannot localise anything** — bisecting a compile failure needs separate programs, not one program
 divided by geometry. Same shape as the probe ladder whose rungs saturated into a solid slab.
 
-**Judged and tuned in a room**: strength 5.5%, blotch size 2.5 grid squares, variation 90%, with a
-tint close to the fog's hue and a good deal darker. Blotches wanted to be **seven times coarser**
-than first guessed — 2.5 squares against 0.33 — which is the same direction charcoal's grain went.
-Procedural texture keeps wanting to be coarser than it seems it should.
+**Judged and tuned in a room**: strength 16%, blotch size 1.5 grid squares, variation 60%, over a
+dark sepia tint. Blotches wanted to be **four to five times coarser** than first guessed — 1.5
+squares against 0.33 — the same direction charcoal's grain went. Procedural texture keeps wanting to
+be coarser than it looks like it should.
+
+**The tint must be dark, and that was the first thing to get wrong.** This shipped with a light
+cream, on the reasoning that parchment is a pale material. But the overlay *mottles* the fog rather
+than replacing it, so a light tint fights the darkness instead of varying it. The right hue differs
+by map (user, 2026-08-02), so the shipped `#4A3520` is a starting point rather than a judged value —
+but "dark" is not the negotiable part.
 
 **Strength is the mean alpha, not the peak, and that was a fix rather than the original design.** The
 mottle began as `opacity × mix(1 - variation, 1, m)`, which made opacity the *peak*: since the noise

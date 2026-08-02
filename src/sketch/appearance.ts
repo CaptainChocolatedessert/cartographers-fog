@@ -288,13 +288,17 @@ export const DEFAULT_APPEARANCE: Appearance = {
       tailWidth: 0.45,
       pressure: 0.35,
     },
-    // Soft-edged, landing heavy and lifting light — the asymmetry is what separates a loaded brush
-    // from a felt tip, and the first attempt got it wrong by tapering symmetrically to nothing.
+    // **Judged good in a room 2026-08-02** — soft-edged, landing heavy and lifting light. The
+    // asymmetry is what separates a loaded brush from a felt tip, and the first attempt got it
+    // wrong by tapering symmetrically to nothing.
     //
     // **`tailWidth` is the correction, not a refinement.** The skeleton is a network, so most
     // contour ends are junctions where other contours continue; a stroke thinning to zero pinched
     // the map wherever walls met (user, 2026-08-01: "makes the junctions look odd"). Ending at 45%
     // of full width keeps the network continuous while still reading as a lift.
+    //
+    // Note the judged look pairs these with a **black** stroke colour rather than the shipped
+    // sepia — but colour is shared across brushes, so it cannot be encoded here. See `strokeColor`.
     ink: {
       featherFraction: 0.45,
       grainScaleSquares: 0.09,
@@ -303,9 +307,9 @@ export const DEFAULT_APPEARANCE: Appearance = {
       nibAngleDegrees: 40,
       nibContrast: 0.15,
       taperFraction: 0.25,
-      entryBulge: 1.45,
+      entryBulge: 1.3,
       tailWidth: 0.45,
-      pressure: 0.4,
+      pressure: 0.75,
     },
     // Nearly hard-edged, because a nib is a pen and softness reads as bleed rather than as ink.
     // 40° is a conventional italic hand; the low contrast keeps a real hairline without losing it.
@@ -331,21 +335,22 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // mottles it. A saturated colour here would read as a filter over the map rather than as paper.
   parchment: {
     enabled: false,
-    color: "#D8C49A",
-    // **Tuned by eye in a room 2026-08-02**, with a tint close to the fog's hue and a good deal
-    // darker. Blotches came out far coarser than first guessed — two and a half grid squares
-    // against a third of one — so the mottle reads as unevenness in a sheet rather than as grain.
-    // Charcoal's grain sits at 0.09; these are different scales of thing and tuning one to match
-    // the other makes both look wrong.
+    // A dark sepia — the sketch's own `#603F21` taken down a couple of stops. The right tint
+    // genuinely differs by map (user, 2026-08-02: "any dark sepia will do as a default. It will
+    // differ by map"), so this is a sane place to start tuning from rather than a judged value.
+    // Dark rather than the cream this shipped with at first: the overlay *mottles* the fog rather
+    // than replacing it, so a light tint fights the darkness instead of varying it.
+    color: "#4A3520",
+    // **Tuned by eye in a room 2026-08-02, under the decoupled formula.** Blotches came out far
+    // coarser than first guessed — a grid square and a half against a third of one — so the mottle
+    // reads as unevenness in a sheet rather than as grain. Charcoal's grain sits at 0.09; these are
+    // different scales of thing, and tuning one to match the other makes both look wrong.
     //
     // `opacity` is the **mean** alpha, not the peak — `contrast` swings the mottle either side of
-    // it without changing the average darkness. The judged settings were made under the older form
-    // where opacity was the peak, so this is re-based on the mean they actually produced: 0.1 peak
-    // at 0.9 variation averaged 0.055. Expect the texture to read with more depth at the same
-    // overall weight, and re-judge. See `PARCHMENT_SKSL`.
-    opacity: 0.055,
-    scaleSquares: 2.5,
-    contrast: 0.9,
+    // it without changing the average darkness, so the two do not fight. See `PARCHMENT_SKSL`.
+    opacity: 0.16,
+    scaleSquares: 1.5,
+    contrast: 0.6,
   },
 };
 

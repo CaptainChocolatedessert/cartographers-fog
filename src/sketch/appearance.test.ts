@@ -304,6 +304,19 @@ describe("brushes", () => {
     expect(charcoal.edgeRoughness).toBe(0.85);
   });
 
+  it("ships the ink brush at the values judged in a room", () => {
+    // Judged good 2026-08-02, after the symmetric-taper rework. Pinned like charcoal's.
+    const ink = DEFAULT_APPEARANCE.brushes.ink;
+
+    expect(ink.featherFraction).toBe(0.45);
+    expect(ink.entryBulge).toBe(1.3);
+    expect(ink.pressure).toBe(0.75);
+    expect(ink.taperFraction).toBe(0.25);
+    expect(ink.tailWidth).toBe(0.45);
+    // The floor that keeps junctions joined — the whole point of the rework.
+    expect(ink.tailWidth).toBeGreaterThan(0);
+  });
+
   it("gives every brush a full settings block", () => {
     // A uniform shape across brushes, even where a brush ignores fields. Anything reading
     // `brushes[id]` must never find a hole, whichever brush is selected.
@@ -411,9 +424,16 @@ describe("parchment", () => {
     // changes what every table sees, so it should break a test rather than slip through.
     const { opacity, scaleSquares, contrast } = DEFAULT_APPEARANCE.parchment;
 
-    expect(opacity).toBe(0.055);
-    expect(scaleSquares).toBe(2.5);
-    expect(contrast).toBe(0.9);
+    expect(opacity).toBe(0.16);
+    expect(scaleSquares).toBe(1.5);
+    expect(contrast).toBe(0.6);
+  });
+
+  it("tints with a dark sepia, not a light parchment colour", () => {
+    // The overlay *mottles* the fog rather than replacing it, so a light tint fights the darkness
+    // instead of varying it — this shipped cream first and looked wrong. The exact hue is a
+    // starting point, since the right one differs by map, but "dark" is not negotiable.
+    expect(DEFAULT_APPEARANCE.parchment.color).toBe("#4A3520");
   });
 
   it("is off by default", () => {
