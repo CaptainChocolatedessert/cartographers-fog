@@ -14,9 +14,9 @@
  * DESIGN.md §2 and §3 arrange for it to run on state change, with per-frame work reduced to
  * a point-in-polygon test per pre-cut segment.
  *
- * NOT handled yet: `Light.innerAngle` / `outerAngle`. Cone-shaped lights are treated as full
- * circles, which over-reports visibility for them. Fine for the common case — Dynamic Fog's
- * default lights are omnidirectional — but it must be added before cone lights are supported.
+ * Cone lights are handled — see `coneAngle`. The convention they assume is unverified, but the
+ * direction of any error is safe: a cone is a subset of the circle this used to sweep regardless
+ * of its facing, so a wrong guess can only reveal less, never more.
  */
 
 import {
@@ -58,6 +58,23 @@ export interface VisibilityOptions {
    * through a wall that should be solid.
    */
   treatOneSidedAsSolid?: boolean;
+  /**
+   * Full angular width of a cone light, in radians. Omit, or pass a full turn, for a circle.
+   *
+   * Maps to `Light.outerAngle` — the *outer* extent, deliberately, not `innerAngle`. Inner is where
+   * the falloff begins, so sweeping it would under-report the dim fringe, and §4 records why
+   * under-reporting is the worse error: it leaves permanent holes in explored ground.
+   *
+   * **The convention here is assumed, not verified**, in the same way `FRONT_SIDE_SIGN` is: the
+   * cone is taken to be centred on `facing`, with `outerAngle` the total width rather than a
+   * half-angle. No cone light has been available to check against. What makes shipping it safe
+   * anyway is that a cone of *any* facing is a subset of the full circle this used to sweep — so
+   * getting the convention wrong can only ever reveal less than the present behaviour does, never
+   * more. It cannot introduce a reveal that is not already happening.
+   */
+  coneAngle?: number;
+  /** Direction the cone points, in radians. Ignored unless `coneAngle` is a partial turn. */
+  facing?: number;
 }
 
 const DEFAULT_ARC_SAMPLES = 64;
@@ -89,14 +106,23 @@ export function computeVisibilityPolygon(
     radius,
     treatOneSidedAsSolid,
   );
-  const angles = candidateAngles(
-    origin,
-    occluders,
-    arcSamples,
-    cornerEpsilon,
-  );
+  const cone = coneHalfWidth(options.coneAngle);
+  const angles =
+    cone === null
+      ? candidateAngles(origin, occluders, arcSamples, cornerEpsilon)
+      : coneAngles(
+          origin,
+          occluders,
+          arcSamples,
+          cornerEpsilon,
+          options.facing ?? 0,
+          cone,
+        );
 
-  const polygon: Vector2[] = [];
+  // A cone is a pie slice, so the apex is part of the boundary. A full circle wraps around the
+  // origin instead and must not include it — inserting it there would pinch the polygon shut
+  // through its own middle.
+  const polygon: Vector2[] = cone === null ? [] : [origin];
   for (const angle of angles) {
     const rayDirection = fromAngle(angle);
 
@@ -133,6 +159,77 @@ function occludingSegments(
   }
 
   return occluders;
+}
+
+/**
+ * Half the cone's width, or `null` when it is a full circle and the old path applies.
+ *
+ * Anything at or above a full turn is a circle. Anything at or below zero is treated as one too,
+ * rather than as a light that sees nothing: a zero here is far more likely to mean "this light has
+ * no cone configured" than "this light is blind", and the second reading would silently delete a
+ * light's contribution.
+ */
+function coneHalfWidth(coneAngle: number | undefined): number | null {
+  if (coneAngle === undefined) return null;
+  if (!Number.isFinite(coneAngle)) return null;
+  if (coneAngle <= 0 || coneAngle >= TWO_PI) return null;
+  return coneAngle / 2;
+}
+
+/** Signed difference between two angles, wrapped to [-PI, PI]. */
+function angleDelta(angle: number, from: number): number {
+  let delta = (angle - from) % TWO_PI;
+  if (delta > Math.PI) delta -= TWO_PI;
+  if (delta < -Math.PI) delta += TWO_PI;
+  return delta;
+}
+
+/**
+ * Candidate angles restricted to a cone, in order from one rim to the other.
+ *
+ * Ordered by offset from `facing` rather than by absolute angle, because a cone straddling zero
+ * would otherwise be sorted into two groups at opposite ends of the range and the polygon would
+ * fold through itself.
+ *
+ * Arc samples are spread across the cone rather than around the circle, so a narrow cone keeps a
+ * smooth rim instead of inheriting whichever few of the circle's samples happened to land in it.
+ */
+function coneAngles(
+  origin: Vector2,
+  segments: readonly Segment[],
+  arcSamples: number,
+  cornerEpsilon: number,
+  facing: number,
+  halfWidth: number,
+): number[] {
+  // Both rims exactly, so the slice's straight edges are where they should be.
+  const deltas: number[] = [-halfWidth, halfWidth];
+
+  for (let i = 0; i <= arcSamples; i++) {
+    deltas.push(-halfWidth + (i / arcSamples) * halfWidth * 2);
+  }
+
+  for (const segment of segments) {
+    for (const endpoint of [segment.a, segment.b]) {
+      const angle = angleOf(subtract(endpoint, origin));
+      for (const candidate of [angle - cornerEpsilon, angle, angle + cornerEpsilon]) {
+        const delta = angleDelta(candidate, facing);
+        if (Math.abs(delta) <= halfWidth) deltas.push(delta);
+      }
+    }
+  }
+
+  deltas.sort((a, b) => a - b);
+
+  const out: number[] = [];
+  for (const delta of deltas) {
+    if (out.length > 0 && Math.abs(delta - out[out.length - 1]!) < ANGLE_DEDUPE_EPSILON) {
+      continue;
+    }
+    out.push(delta);
+  }
+
+  return out.map((delta) => facing + delta);
 }
 
 /** Every angle worth casting a ray along, normalised to [0, 2PI) and deduplicated. */

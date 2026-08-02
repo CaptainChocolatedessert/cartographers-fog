@@ -29,6 +29,8 @@ import OBR, {
 import { devLog } from "../devlog";
 import { computeVisibilityPolygon } from "./visibility";
 import { wallsToSegments } from "./walls";
+import { intersectStarPolygons } from "../geometry/starClip";
+import { simplifyPolyline } from "../trace/simplify";
 import type { Segment } from "../geometry/segment";
 import type { Vector2 } from "../geometry/vector";
 
@@ -183,16 +185,7 @@ async function recompute(): Promise<void> {
 
     const startedAt = performance.now();
     const segments = wallsToSegments(walls);
-
-    const views: LightView[] = [];
-    for (const light of lights) {
-      // Full attenuation radius: walls, not distance, gate what was seen, and
-      // under-reporting leaves conspicuous holes. See DESIGN.md §4.
-      const polygon = computeVisibilityPolygon(light.position, segments, {
-        radius: light.attenuationRadius,
-      });
-      if (polygon.length >= 3) views.push({ light, polygon });
-    }
+    const views = sweepLights(lights, segments);
     const elapsedMs = performance.now() - startedAt;
 
     const snapshot: VisibilitySnapshot = {
@@ -207,6 +200,157 @@ async function recompute(): Promise<void> {
   } catch (error) {
     devLog("error", "visibility recompute failed", error);
   }
+}
+
+/** Vertex budget for the polygons handed to the clipper — see `sweepLights`. */
+const CLIP_TOLERANCE = 4;
+
+/**
+ * How far a light can *see*, as opposed to how far it lights.
+ *
+ * Line of sight is not bounded by your own lamp — you can see a lit hall from much further away
+ * than your torch reaches — so this has to stand in for "unbounded". It is the diagonal of
+ * everything walled in the scene, which is guaranteed to cover anything sight could reach, with
+ * walls doing the real work of stopping it. Deriving it from the light's own radius would be
+ * wrong in a way that is easy to miss: a dim lamp does not make its bearer short-sighted.
+ */
+function sightRadius(segments: readonly Segment[]): number {
+  if (segments.length === 0) return 0;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const segment of segments) {
+    for (const point of [segment.a, segment.b]) {
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
+  }
+  return Math.hypot(maxX - minX, maxY - minY);
+}
+
+/**
+ * Sweep every light, treating the ones Dynamic Fog only reveals in line of sight differently.
+ *
+ * ## The rule
+ *
+ * A `PRIMARY` light is a torch in someone's hand: it lights an area and reveals it outright. A
+ * `SECONDARY` light is a brazier standing in a room — it lights the room, but the party only see
+ * that light where they can also *see into* the room. Treating both as primary is what put holes
+ * in the parchment over three rooms nobody had entered (user, 2026-08-02), which advertises that
+ * those rooms exist.
+ *
+ * So a non-primary light contributes its illuminated area **intersected with the party's line of
+ * sight**, and nothing where the two do not meet.
+ *
+ * ## Two things that make this affordable
+ *
+ * Line of sight comes free with the illuminated polygon. Occlusion is radial — the nearest hit
+ * along a ray is `min(wall, R)`, so clamping each vertex to a smaller `r` gives exactly the
+ * `r` polygon — so one long sweep yields both the sight polygon and the lit one. DESIGN.md
+ * records this as a spare part looking for a use; this is the use.
+ *
+ * And the clipper's cost is the product of two vertex counts, which is millions of triangle pairs
+ * at the ~2,750 vertices a raw visibility polygon carries. Both sides are simplified first. The
+ * primary polygons keep their full precision for their *own* contribution — that boundary moves
+ * with the party and is looked at directly — and only the secondary-derived pieces are built from
+ * simplified geometry, where a few units of raggedness is explicitly acceptable.
+ */
+function sweepLights(lights: readonly Light[], segments: Segment[]): LightView[] {
+  const views: LightView[] = [];
+  const sight: { origin: Vector2; polygon: Vector2[] }[] = [];
+  const secondary: { light: Light; polygon: Vector2[] }[] = [];
+
+  // Nothing needs line of sight unless a light depends on it, and the sight sweep is the expensive
+  // one — its radius defeats the distance pruning, so every ray tests every wall in the scene. Most
+  // scenes have no secondary light at all, and they must not pay for this.
+  const needsSight = lights.some((light) => light.lightType !== "PRIMARY");
+  const sightRange = needsSight ? sightRadius(segments) : 0;
+
+  for (const light of lights) {
+    const options = {
+      // `outerAngle` is the outer extent; see `VisibilityOptions.coneAngle` for why not the inner.
+      coneAngle: (light.outerAngle * Math.PI) / 180,
+      facing: (light.rotation * Math.PI) / 180,
+    };
+
+    if (light.lightType === "PRIMARY") {
+      if (sightRange <= light.attenuationRadius) {
+        const lit = computeVisibilityPolygon(light.position, segments, {
+          ...options,
+          radius: light.attenuationRadius,
+        });
+        if (lit.length >= 3) views.push({ light, polygon: lit });
+        continue;
+      }
+
+      // One sweep at sight range, then clamped down for what the lamp actually lights.
+      const seen = computeVisibilityPolygon(light.position, segments, {
+        ...options,
+        radius: sightRange,
+      });
+      if (seen.length >= 3) {
+        sight.push({ origin: light.position, polygon: seen });
+      }
+
+      const lit = clampToRadius(seen, light.position, light.attenuationRadius);
+      if (lit.length >= 3) views.push({ light, polygon: lit });
+      continue;
+    }
+
+    const polygon = computeVisibilityPolygon(light.position, segments, {
+      ...options,
+      radius: light.attenuationRadius,
+    });
+    if (polygon.length >= 3) secondary.push({ light, polygon });
+  }
+
+  // Clipped after every primary is known, since a secondary may be seen from any of them.
+  for (const entry of secondary) {
+    const simplified = simplifyPolyline(entry.polygon, CLIP_TOLERANCE);
+    if (simplified.length < 3) continue;
+
+    for (const seen of sight) {
+      const pieces = intersectStarPolygons(
+        { origin: entry.light.position, polygon: simplified },
+        {
+          origin: seen.origin,
+          polygon: simplifyPolyline(seen.polygon, CLIP_TOLERANCE),
+        },
+      );
+      // Each piece stands alone. Two primaries that both see the same brazier will produce
+      // overlapping pieces, which the parchment's even-odd rule turns back into filled patches —
+      // mottle over somewhere the party can see, which is the harmless direction and not worth
+      // a union operation to avoid.
+      for (const piece of pieces) views.push({ light: entry.light, polygon: piece });
+    }
+  }
+
+  return views;
+}
+
+/**
+ * The polygon a shorter radius would have produced, by pulling each vertex in.
+ *
+ * Valid because occlusion is radial: a ray's length is `min(wall, R)`, and clamping to `r < R`
+ * gives `min(wall, R, r) = min(wall, r)`, which is what sweeping at `r` would have returned.
+ */
+function clampToRadius(
+  polygon: readonly Vector2[],
+  origin: Vector2,
+  radius: number,
+): Vector2[] {
+  return polygon.map((point) => {
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
+    const length = Math.hypot(dx, dy);
+    if (length <= radius || length === 0) return point;
+    const scale = radius / length;
+    return { x: origin.x + dx * scale, y: origin.y + dy * scale };
+  });
 }
 
 /**
@@ -232,11 +376,21 @@ function logTick(lights: readonly Light[], changed: boolean): void {
   eventsSinceTick = 0;
   tickCount++;
 
+  // Type and cone reported alongside the position, because the sweep currently ignores both and
+  // treats every light as a token's own omnidirectional torch. A light Dynamic Fog only reveals
+  // when it is in line of sight still gets a full polygon here, which marks its whole room as
+  // currently visible — and, since the same polygons feed the accumulator, as discovered.
   const where = lights
-    .map(
-      (light) =>
-        `(${light.position.x.toFixed(0)},${light.position.y.toFixed(0)})`,
-    )
+    .map((light) => {
+      const cone =
+        light.outerAngle > 0 && light.outerAngle < 360
+          ? ` cone ${light.outerAngle.toFixed(0)}°`
+          : "";
+      return (
+        `(${light.position.x.toFixed(0)},${light.position.y.toFixed(0)} ` +
+        `${light.lightType}${light.visible ? "" : " HIDDEN"}${cone})`
+      );
+    })
     .join(" ");
 
   devLog(

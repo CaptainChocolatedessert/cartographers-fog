@@ -218,3 +218,105 @@ describe("computeVisibilityPolygon: one-sided walls", () => {
     expect(seesThroughFromBelow).not.toBe(seesThroughFromAbove);
   });
 });
+
+describe("cone lights", () => {
+  const open: Segment[] = [];
+
+  it("treats an absent, zero or full-turn cone as a circle", () => {
+    // A zero almost certainly means "no cone configured" rather than "this light is blind", and
+    // reading it the other way would silently delete a light's whole contribution.
+    const circle = area(computeVisibilityPolygon(ORIGIN, open, { radius: 100 }));
+
+    for (const coneAngle of [undefined, 0, -1, Math.PI * 2, Math.PI * 3, NaN]) {
+      const swept = computeVisibilityPolygon(ORIGIN, open, {
+        radius: 100,
+        coneAngle,
+      });
+      expect(area(swept)).toBeCloseTo(circle, 0);
+    }
+  });
+
+  it("sweeps half the area at a half-turn, and a quarter at a quarter", () => {
+    const circle = area(computeVisibilityPolygon(ORIGIN, open, { radius: 100 }));
+
+    const half = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI,
+    });
+    const quarter = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI / 2,
+    });
+
+    expect(area(half) / circle).toBeCloseTo(0.5, 1);
+    expect(area(quarter) / circle).toBeCloseTo(0.25, 1);
+  });
+
+  it("includes the apex, so the slice is closed through the light", () => {
+    // A pie slice's boundary passes through its apex. A full circle's must not — inserting the
+    // origin there would pinch the polygon shut through its own middle.
+    const cone = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI / 2,
+    });
+    expect(cone.some((p) => p.x === ORIGIN.x && p.y === ORIGIN.y)).toBe(true);
+  });
+
+  it("points where it is facing", () => {
+    const facingRight = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI / 2,
+      facing: 0,
+    });
+
+    expect(pointInPolygon({ x: 60, y: 0 }, facingRight)).toBe(true);
+    expect(pointInPolygon({ x: -60, y: 0 }, facingRight)).toBe(false);
+    expect(pointInPolygon({ x: 0, y: 60 }, facingRight)).toBe(false);
+  });
+
+  it("works when the cone straddles zero", () => {
+    // Ordering by absolute angle would split this into two groups at opposite ends of the range
+    // and fold the polygon through itself, so the area would come out wrong or negative.
+    const straddling = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI / 2,
+      facing: 0,
+    });
+    const rotated = computeVisibilityPolygon(ORIGIN, open, {
+      radius: 100,
+      coneAngle: Math.PI / 2,
+      facing: Math.PI,
+    });
+    expect(area(straddling)).toBeCloseTo(area(rotated), 0);
+    expect(pointInPolygon({ x: 60, y: 0 }, straddling)).toBe(true);
+  });
+
+  it("is always a subset of the full circle, whatever the facing", () => {
+    // The property that makes shipping an unverified cone convention safe: getting the facing
+    // wrong can only reveal LESS than the circle this used to sweep, never more. So it cannot
+    // introduce a reveal that is not already happening.
+    const circle = computeVisibilityPolygon(ORIGIN, room, { radius: 150 });
+
+    for (let i = 0; i < 12; i++) {
+      const cone = computeVisibilityPolygon(ORIGIN, room, {
+        radius: 150,
+        coneAngle: Math.PI / 3,
+        facing: (i / 12) * Math.PI * 2,
+      });
+      expect(area(cone)).toBeLessThanOrEqual(area(circle) + 1e-6);
+    }
+  });
+
+  it("is still bounded by walls", () => {
+    // A cone must not see through a wall just because the wall is inside its wedge.
+    const wall: Segment[] = [{ a: { x: 50, y: -100 }, b: { x: 50, y: 100 } }];
+    const cone = computeVisibilityPolygon(ORIGIN, wall, {
+      radius: 200,
+      coneAngle: Math.PI / 2,
+      facing: 0,
+    });
+
+    expect(pointInPolygon({ x: 30, y: 0 }, cone)).toBe(true);
+    expect(pointInPolygon({ x: 120, y: 0 }, cone)).toBe(false);
+  });
+});

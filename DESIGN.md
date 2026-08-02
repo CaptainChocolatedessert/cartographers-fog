@@ -162,6 +162,93 @@ its bright core, and no cutoff has to be invented.
 Keep the debug overlay working. This is tuning that will need rechecking whenever the sweep
 changes, not a question answered once and for all.
 
+#### Not every light reveals — `lightType`, and the bug it caused (2026-08-02)
+
+Found in a room by the user: three coherent room complexes nobody had entered were being cut out
+of the parchment overlay, advertising that those rooms exist. The log named the cause immediately —
+three `SECONDARY` lights against one `PRIMARY`.
+
+**Dynamic Fog's light types are not decoration.** A `PRIMARY` light is a torch in a hand: it lights
+an area and reveals it outright. A `SECONDARY` light is a brazier standing in a room — it lights
+that room, but the party see it only where they can also *see into* the room. We were sweeping all
+of them identically, so every brazier on the map behaved like a party member standing in the dark
+holding a lamp.
+
+**The consequences ran further than the overlay.** The same polygons feed the region accumulator, so
+those rooms were being written into the persistent discovered region without anyone going there. And
+because a fixed light never moves, its room is permanently "currently visible" — so
+`discovered − currently_visible` excludes it forever, and the room could never be sketched even
+after the party walked through it.
+
+**The rule: a non-primary light contributes its lit area intersected with the party's line of
+sight.** The user's framing, and the correction that matters — an earlier draft gated on whether the
+*light source* was visible, which fails the ordinary case of a brazier behind a pillar in a hall you
+are plainly looking into. It is the illuminated area that has to be visible, not the lamp.
+
+**Line of sight is not the primary's lit polygon**, and that is the subtlety. Sight is not bounded by
+your own lamp — you can see a lit hall from much further away than your torch reaches — so the
+gating polygon has to be a sweep at map scale, bounded only by walls. That would be a second
+expensive sweep per primary light, except that occlusion is radial: the nearest hit along a ray is
+`min(wall, R)`, so clamping every vertex of the long sweep to a smaller `r` gives exactly the
+polygon `r` would have produced. **One sweep yields both.** This document recorded that identity as
+a spare part looking for a use; this is the use.
+
+Two costs worth knowing. The sight sweep's radius defeats the distance pruning, so every ray tests
+every wall in the scene — which is why it runs **only when a non-primary light is actually present**.
+A scene of ordinary torches pays nothing. And a scene with several primaries produces overlapping
+pieces where two of them see the same brazier, which the even-odd stencil turns back into filled
+patches: mottle over ground the party can see. That is the harmless direction, and not worth a union
+operation to avoid.
+
+##### The clipper, and why it is fans rather than a general one
+
+`geometry/starClip.ts`, pure and tested. General simple-polygon intersection means Greiner–Hormann
+or a sweep line, both of which are notorious for breaking on degeneracies — vertices lying exactly
+on edges, collinear overlaps — and visibility polygons are unusually rich in exactly those, because
+their vertices sit on wall lines and shared ray directions. The hard cases would be the common ones.
+
+A visibility polygon is **star-shaped about its own light**, which is what "visible from here"
+means, so the triangle fan from the light to each boundary edge tiles it exactly. Intersecting two
+polygons then reduces to intersecting pairs of *triangles*, and a triangle is convex — which puts
+the whole computation on Sutherland–Hodgman, which is exact for a convex clip, a dozen lines, and
+carries no degeneracy folklore. The result is a list of convex pieces rather than one polygon;
+merging them would need the union operation being avoided, and every consumer here is content with
+pieces.
+
+**Soundness is the property, not precision** (user, 2026-08-02): "I can accept pretty low fidelity
+of a polygon as long as there should be one. I can't accept punching a hole in the parchment at all
+if there shouldn't be a hole, because that reveals the existence of a room." Fans give that by
+construction — each triangle is inside its own polygon, and clipping to a convex region returns a
+subset. Simplification preserves it too, since dropping vertices from a *convex* polygon can only
+shrink it. Hence the inputs are simplified before clipping, which is also what makes the cost
+bearable: the product of two vertex counts is millions of triangle pairs at the ~2,750 vertices a
+raw polygon carries, and trivial at the few dozen a simplified one does. Primary polygons keep full
+precision for their own contribution, since that boundary moves with the party and is looked at
+directly.
+
+One implementation note that cost a debugging round: `polygon.ts`'s `signedArea` uses the trapezoid
+form, whose sign is the **opposite** of the standard shoelace. Normalising winding with it inverted
+the inside test and every intersection came back empty. The clipper now derives which side is inside
+from the clip polygon's own centroid, so it assumes no winding convention at all — which suits a
+y-down world where "counter-clockwise" is not a safe thing to inherit.
+
+##### Cone lights, closed at the same time
+
+`innerAngle`/`outerAngle` were a recorded gap: every light was swept as a full circle, which
+over-reports a cone — the same class of error as the `SECONDARY` bug, so it was fixed alongside.
+The sweep restricts its candidate angles to the wedge and closes the polygon **through the apex**,
+since a pie slice's boundary passes through its light where a full circle's must not.
+
+`outerAngle` rather than `innerAngle`: inner is where falloff begins, so sweeping it would
+under-report the dim fringe, and §4 records why under-reporting is the worse error.
+
+**The convention is assumed, not verified** — cone centred on the light's rotation, `outerAngle` the
+total width — in the same spirit as `FRONT_SIDE_SIGN`, because no cone light has been available to
+test against. What makes that safe to ship is a property rather than a hope: **a cone of any facing
+is a subset of the full circle**, so a wrong guess can only ever reveal less than the previous
+behaviour did, never more. It cannot introduce a reveal that was not already happening. A test pins
+that subset property across twelve facings.
+
 ### 2. Trace edges once, not per frame
 
 At map import / scene setup:
