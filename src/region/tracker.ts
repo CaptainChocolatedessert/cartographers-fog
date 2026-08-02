@@ -40,6 +40,7 @@ import {
 // a client that had one on screen from an earlier build loses it on the next scene change.
 import { clearWash } from "./wash";
 import { clearParchment, renderParchment } from "./parchmentOverlay";
+import { visibleShape } from "./visibleShape";
 import {
   onSketchSettingsChange,
   readSketchSettings,
@@ -639,9 +640,30 @@ async function render(): Promise<void> {
     const sketch = await renderSketch(discovered, visiblePolygons);
     const sketchMs = performance.now() - startedSketch;
 
+    // The parchment gets the visible region as a **unioned outline**, not the raw polygons.
+    //
+    // Punching each polygon as its own even-odd hole needs them disjoint, and they are not: a
+    // torch standing in a brazier-lit room overlaps that brazier's lit area, and an overlap of two
+    // holes counts three crossings and fills back in. Unioning through a bitmap makes overlap
+    // meaningless and leaves no internal edges to show as seams, and tracing the result back to
+    // vectors keeps the outline resolution-independent rather than stair-stepped.
+    //
+    // **The sketch mask still gets the polygons at full precision**, deliberately — §3 is explicit
+    // that the visible boundary is the one that moves with the party and is looked at directly, so
+    // only the overlay, which needs rings rather than point tests, pays the quantisation.
+    // Captured rather than read through the module binding: the awaits above mean TypeScript can
+    // no longer prove it is still set, and it genuinely could be cleared by a scene change
+    // mid-render.
+    const shapeGrid = grid;
+    const startedShape = performance.now();
+    const shape = shapeGrid
+      ? visibleShape(shapeGrid, visiblePolygons)
+      : { rings: [], cellsCovered: 0, cellsKept: 0 };
+    const shapeMs = performance.now() - startedShape;
+
     const parchment = await renderParchment(
       gridBounds(grid),
-      visiblePolygons,
+      shape.rings,
       appearance.parchment,
       sceneDpi,
     );
@@ -658,7 +680,12 @@ async function render(): Promise<void> {
         ` in ${sketchMs.toFixed(0)}ms` +
         (parchment.drawn === 0
           ? "; parchment off"
-          : `; parchment ${parchment.commands} commands, ` +
+          : `; parchment ${shape.rings.length} rings from ` +
+            // Both cell counts, because "no rings" looks identical whether nothing was visible or
+            // the erosion ate it all, and those want opposite fixes. Same reason every other
+            // diagnostic here reports its denominator.
+            `${shape.cellsKept}/${shape.cellsCovered} cells in ${shapeMs.toFixed(0)}ms, ` +
+            `${parchment.commands} commands, ` +
             `${parchment.tolerance.toFixed(1)}u tolerance, ` +
             `build ${parchment.buildMs.toFixed(0)}ms + commit ${parchment.commitMs.toFixed(0)}ms` +
             // Non-zero means the command budget forced a hole to be abandoned, which leaves

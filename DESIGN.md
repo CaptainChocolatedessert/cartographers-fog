@@ -1812,6 +1812,55 @@ path **cannot be chunked**: split the extent into tiles and each tile would stil
 another's hole overlapped it, because even-odd counts crossings across the whole path. So the
 tolerance rises until the command budget is met, which always converges.
 
+##### The holes are one unioned outline, not one ring per polygon (2026-08-02)
+
+Punching each visible polygon as its own inner ring works only while those rings are **disjoint**,
+and once lights stopped being interchangeable they no longer were. Two failures, both found in a
+room, and each patch for one bought the other:
+
+- **Overlapping holes fill back in.** Even-odd counts crossings, so a point inside the extent and
+  two holes has three and is filled. A torch standing in a brazier-lit room overlaps that brazier's
+  lit area, so the overlap turned back into parchment.
+- **Abutting holes show their seams.** Clipping a lit area to line of sight produced a fan of small
+  pieces sharing radial edges, and those rasterised as dotted lines running outward from each light.
+
+Both are properties of the representation, not of the geometry. So `region/visibleShape.ts` unions
+the visible polygons in a **bitmap** — where overlap is meaningless, since marking a cell twice is
+marking it once, and there are no internal edges to show — and then traces the result back out with
+the marching-squares tracer the trace pipeline already owns. One outline, no seams, no overlap. A
+pillar standing in a lit room falls out for free as an inner ring, which even-odd fills correctly;
+the piecewise version would have made a mess of it.
+
+**Tracing back to vectors rather than emitting cells is what keeps it smooth.** Marching squares on
+a binary mask already chamfers corners at 45° rather than stepping at 90°, and Douglas–Peucker then
+cuts across what remains, so the outline is ordinary linework at any zoom rather than visible
+stair-steps.
+
+**Every stage shrinks, and that is the entire safety argument** (user, 2026-08-02: "I can't accept
+punching a hole in the parchment at all if there shouldn't be a hole, because that reveals the
+existence of a room"). Rasterising samples cell centres; eroding drops any cell with an unset
+neighbour, pulling the boundary a full cell inside; and simplification may cut a corner outward but
+by at most its tolerance, which is held below the erosion distance. **The erosion is not optional
+and exists solely to pay for the simplifier** — Douglas–Peucker cutting across a concave bend moves
+the boundary outward, and outward next to a wall means into the room beyond it. Smoothing a raster
+without eroding first reintroduces exactly the failure being prevented.
+
+The cost is that the visible region sits a cell inside the truth — about four world units against a
+150-unit grid square on the test map, invisible next to the mottle it is cutting.
+
+**The sketch mask still gets the polygons at full precision.** Only the overlay, which needs rings
+rather than point tests, pays the quantisation — which keeps the §3 decision that the *visible*
+boundary is the one that moves with the party and gets looked at directly.
+
+**A testing lesson worth keeping, because the first version of the test could not fail.** Soundness
+was checked by asserting every ring *vertex* lay inside the source polygon — and Douglas–Peucker
+returns a subset of the vertices it was given, so those are inside by construction whatever the
+tolerance. A deliberately over-large tolerance sailed through. The failure is the **chord between**
+two kept vertices bowing outward, so the test now samples along every edge. The fixture had to
+change too: an L-shape's single reflex corner is so deep that the simplifier keeps it at any sane
+tolerance, so the pinning fixture is a finely scalloped gear whose shallow teeth an over-large
+tolerance flattens. Same shape as every other too-tidy fixture recorded here.
+
 ###### Two SDK facts this cost three rounds to find, both about attached effects
 
 1. **An attached `Effect` covers its parent's fill region — its own `width`, `height` and `position`
