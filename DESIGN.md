@@ -1610,10 +1610,38 @@ Two smaller decisions worth not re-deriving:
   *places* and visibly tore the stroke apart, here the point stays put and only its width differs,
   by a fraction of a percent on geometry the wobble has already subdivided.
 
-**Neither is judged yet.** Defaults exist to make each medium legible on first sight, not because
-they are right. Note the honest expectation recorded when these were proposed: **the ink brush is
-the one most likely to disappoint**, because a wet brush's character comes from bristle separation
-and pigment pooling, which are normally authored as texture — and no texture can reach the shader.
+**Judged 2026-08-01: the nib is good, the ink brush needed rework** — the expectation above held.
+
+##### The ink profile is asymmetric, and never reaches zero
+
+The first ink brush tapered symmetrically to nothing at both ends, and the user's verdict named the
+real defect: *"they all taper to zero width at the beginning and end, which makes the junctions look
+odd."*
+
+**That is structural, not cosmetic.** A traced skeleton is a **network**. `chopContours` walks it
+into chains between junctions, so the great majority of contour ends are *junctions where other
+contours carry on* — not free ends where a hand lifted. A profile that vanishes at both ends
+therefore punches a pinch-hole at every place walls meet on the map. The symmetric taper was
+modelling a lone brushstroke on blank paper, which is not what the geometry is.
+
+The profile is now three things, and the shape of it matters:
+
+- **Entry blob.** The stroke starts *wider* than full width and settles quickly. A brush lands
+  before it travels, and this asymmetry is most of what separates it from a felt tip.
+- **Pressure wander** through the middle, unchanged.
+- **Lift**, thinning over the last stretch to `tailWidth` — **a fraction of full weight, never
+  zero**. The stroke lightens without breaking the network.
+
+Entry is given its *own*, shorter span (`ENTRY_SPAN_SHARE`, half the lift's) because a brush lands
+faster than it leaves; sharing one span reads as a bulge with a stroke attached rather than as a
+stroke that began heavy.
+
+**`MIN_TAIL_WIDTH` lives in the validator, not just in the slider's range.** Keeping the floor in
+`fromRoomMetadata` means a stale or hand-written metadata value cannot reintroduce the pinch either.
+
+Still true, and worth keeping in view: a wet brush's character comes from bristle separation and
+pigment pooling, which are normally authored as texture — and no texture can reach the shader. What
+is here is a width profile, not a brush engine.
 
 ##### Parked: making the shader renderer faster
 

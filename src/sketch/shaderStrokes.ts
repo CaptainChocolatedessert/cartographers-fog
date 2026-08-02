@@ -217,6 +217,8 @@ function brushWidthsFor(
   return inkWidths(strokes, {
     halfWidth,
     taperFraction: settings.taperFraction,
+    entryBulge: settings.entryBulge,
+    tailWidth: settings.tailWidth,
     pressure: settings.pressure,
     // Fixed, so the same map redraws identically — §6 again. A seed drawn from the clock would make
     // every stroke change thickness on every token move, which is the map breathing by another

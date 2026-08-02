@@ -95,6 +95,10 @@ const edgeRoughnessInput = element<HTMLInputElement>("edgeRoughness");
 const edgeRoughnessValue = element("edgeRoughnessValue");
 const taperInput = element<HTMLInputElement>("taper");
 const taperValue = element("taperValue");
+const entryBulgeInput = element<HTMLInputElement>("entryBulge");
+const entryBulgeValue = element("entryBulgeValue");
+const tailWidthInput = element<HTMLInputElement>("tailWidth");
+const tailWidthValue = element("tailWidthValue");
 const pressureInput = element<HTMLInputElement>("pressure");
 const pressureValue = element("pressureValue");
 const nibAngleInput = element<HTMLInputElement>("nibAngle");
@@ -670,6 +674,18 @@ async function start(): Promise<void> {
     const fraction = Number(taperInput.value) / 100;
     taperValue.textContent = `${Math.round(fraction * 100)}%`;
     queueBrush({ taperFraction: fraction });
+  });
+
+  entryBulgeInput.addEventListener("input", () => {
+    const bulge = Number(entryBulgeInput.value) / 100;
+    entryBulgeValue.textContent = `${Math.round(bulge * 100)}%`;
+    queueBrush({ entryBulge: bulge });
+  });
+
+  tailWidthInput.addEventListener("input", () => {
+    const tail = Number(tailWidthInput.value) / 100;
+    tailWidthValue.textContent = `${Math.round(tail * 100)}%`;
+    queueBrush({ tailWidth: tail });
   });
 
   pressureInput.addEventListener("input", () => {

@@ -96,12 +96,31 @@ export interface InkOptions {
   /** Half-width at full pressure, in world units. */
   readonly halfWidth: number;
   /**
-   * How much of each end of a stroke is taper, as a fraction of the contour's length.
+   * How much of the stroke's *end* is spent thinning, as a fraction of the contour's length.
    *
    * **Of the contour, not of the segment** — see `SegmentProvenance`. Tapering per segment would
    * make every masking cut a brush lift, and a wall would read as a row of dashes.
    */
   readonly taperFraction: number;
+  /**
+   * How much wider the stroke starts, as a multiple of the full width. **One is no blob.**
+   *
+   * A brush lands before it travels, so a stroke begins heavy and thins as the bristles take up
+   * the motion. This is the first thing that separates a loaded brush from a felt tip, and it is
+   * the opposite of what a symmetric taper does.
+   */
+  readonly entryBulge: number;
+  /**
+   * How thin the stroke ends, as a fraction of the full width. **One is no thinning at all.**
+   *
+   * **Never zero, and that is the point.** A traced skeleton is a *network*: most contour ends are
+   * junctions where other contours carry on, not free ends where a hand lifted. Thinning to nothing
+   * puts a pinch at every junction on the map, which reads as a rendering fault rather than as
+   * brushwork (user, 2026-08-01: "they all taper to zero width at the beginning and end, which
+   * makes the junctions look odd"). A stroke that merely *lightens* at the end leaves the network
+   * continuous.
+   */
+  readonly tailWidth: number;
   /**
    * How much the width wanders along a stroke, 0–1. **Zero is a mark of constant thickness.**
    *
@@ -136,7 +155,6 @@ export function inkWidths(
   segments: readonly TracedSegment[],
   options: InkOptions,
 ): SegmentWidths[] {
-  const taper = clamp01(options.taperFraction);
   const pressure = clamp01(options.pressure);
 
   return segments.map((segment) => {
@@ -144,8 +162,7 @@ export function inkWidths(
     const fractions = contourFractions(segment.points, provenance);
 
     return fractions.map((t) => {
-      const shape =
-        provenance && !provenance.closed ? taperAt(t, taper) : 1;
+      const shape = provenance && !provenance.closed ? inkProfile(t, options) : 1;
       // Centred on 1 so raising pressure thickens as often as it thins, rather than making the
       // whole sketch lighter as the slider moves.
       const wander =
@@ -156,17 +173,41 @@ export function inkWidths(
   });
 }
 
+/** How much quicker the entry blob settles than the tail thins. A brush lands faster than it lifts. */
+const ENTRY_SPAN_SHARE = 0.5;
+const MIN_ENTRY_SPAN = 0.02;
+
 /**
- * Taper profile: zero at the very ends, one across the middle.
+ * The stroke's weight along its length: heavy at the start, full through the middle, lighter at the
+ * end. **Asymmetric, and never zero.**
  *
- * `smoothstep` rather than a linear ramp, so the width leaves the tip smoothly and arrives at full
- * weight smoothly. A linear taper reads as a wedge — correct for a chisel, wrong for a brush, whose
- * tip lands and spreads.
+ * This replaced a symmetric taper that reached zero at both ends, which was wrong twice over. A real
+ * brush is not symmetric — it lands loaded and lifts away, so the two ends do different things. And
+ * a traced skeleton is a network whose contour ends are mostly *junctions*, so a profile that
+ * vanishes at both ends punches a hole at every place three walls meet.
+ *
+ * `smoothstep` on both ramps rather than a linear one: a linear change reads as a wedge, which is
+ * right for a chisel and wrong for a brush whose tip lands and spreads.
  */
-export function taperAt(t: number, taperFraction: number): number {
-  if (!(taperFraction > 0)) return 1;
-  const span = Math.min(0.5, taperFraction);
-  return smoothstep(clamp01(t / span)) * smoothstep(clamp01((1 - t) / span));
+export function inkProfile(
+  t: number,
+  options: Pick<InkOptions, "taperFraction" | "entryBulge" | "tailWidth">,
+): number {
+  const span = Math.min(0.5, Math.max(0, options.taperFraction));
+  const bulge = Math.max(0, options.entryBulge);
+  const tail = clamp01(options.tailWidth);
+
+  // The blob: full bulge at t=0, settled to normal by the end of a short entry span. Given its own
+  // span rather than sharing the tail's, because a stroke that took as long to settle as it takes
+  // to lift would read as a bulge with a stroke attached.
+  const entrySpan = Math.max(MIN_ENTRY_SPAN, span * ENTRY_SPAN_SHARE);
+  const entry = 1 + (bulge - 1) * (1 - smoothstep(clamp01(t / entrySpan)));
+
+  // The tail: full width until the last `span` of the stroke, then down to `tail` — a fraction of
+  // full weight, not nothing.
+  const lift = span > 0 ? tail + (1 - tail) * smoothstep(clamp01((1 - t) / span)) : 1;
+
+  return entry * lift;
 }
 
 /**

@@ -173,12 +173,27 @@ export interface BrushSettings {
    */
   readonly nibContrast: number;
   /**
-   * How much of each end of a stroke tapers, as a fraction of the whole contour's length. Ink only.
+   * How much of the stroke's *end* thins, as a fraction of the whole contour's length. Ink only.
    *
-   * Of the **contour**, which is the whole reason `SegmentProvenance` exists — tapering per masking
+   * Of the **contour**, which is the whole reason `SegmentProvenance` exists — thinning per masking
    * segment would make every cut look like a brush lift.
    */
   readonly taperFraction: number;
+  /**
+   * How much wider an ink stroke starts, as a multiple of full width. **One is no blob.**
+   *
+   * A brush lands before it travels. This is the asymmetry that separates it from a felt tip, and
+   * it is why the profile is not a symmetric taper.
+   */
+  readonly entryBulge: number;
+  /**
+   * How thin an ink stroke ends, as a fraction of full width. **One is no thinning.**
+   *
+   * Deliberately floored above zero in the panel. A traced skeleton is a network, so most contour
+   * ends are junctions rather than free ends — a stroke that vanished would pinch the map at every
+   * place walls meet.
+   */
+  readonly tailWidth: number;
   /** How much the ink brush's width wanders along a stroke, 0–1. Zero is an even mark. */
   readonly pressure: number;
 }
@@ -224,6 +239,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
       nibAngleDegrees: 40,
       nibContrast: 0.15,
       taperFraction: 0.15,
+      entryBulge: 1.4,
+      tailWidth: 0.45,
       pressure: 0.35,
     },
     // **Tuned by eye in a room and judged good** (user, 2026-08-01) — not a starting guess. Changing
@@ -241,10 +258,17 @@ export const DEFAULT_APPEARANCE: Appearance = {
       nibAngleDegrees: 40,
       nibContrast: 0.15,
       taperFraction: 0.15,
+      entryBulge: 1.4,
+      tailWidth: 0.45,
       pressure: 0.35,
     },
-    // Soft-edged with a pronounced taper, which is what separates a loaded brush from a felt tip.
-    // **Unjudged** — chosen to make the medium legible at first sight, not because they are right.
+    // Soft-edged, landing heavy and lifting light — the asymmetry is what separates a loaded brush
+    // from a felt tip, and the first attempt got it wrong by tapering symmetrically to nothing.
+    //
+    // **`tailWidth` is the correction, not a refinement.** The skeleton is a network, so most
+    // contour ends are junctions where other contours continue; a stroke thinning to zero pinched
+    // the map wherever walls met (user, 2026-08-01: "makes the junctions look odd"). Ending at 45%
+    // of full width keeps the network continuous while still reading as a lift.
     ink: {
       featherFraction: 0.45,
       grainScaleSquares: 0.09,
@@ -252,7 +276,9 @@ export const DEFAULT_APPEARANCE: Appearance = {
       edgeRoughness: 0,
       nibAngleDegrees: 40,
       nibContrast: 0.15,
-      taperFraction: 0.2,
+      taperFraction: 0.25,
+      entryBulge: 1.45,
+      tailWidth: 0.45,
       pressure: 0.4,
     },
     // Nearly hard-edged, because a nib is a pen and softness reads as bleed rather than as ink.
@@ -267,6 +293,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
       nibAngleDegrees: 40,
       nibContrast: 0.12,
       taperFraction: 0,
+      entryBulge: 1,
+      tailWidth: 1,
       pressure: 0,
     },
   },
@@ -310,6 +338,18 @@ export const MAX_EDGE_ROUGHNESS = 1;
  */
 export const MAX_NIB_ANGLE_DEGREES = 180;
 export const MAX_TAPER_FRACTION = 0.5;
+
+/**
+ * Entry blob ceiling, and the floor under how thin a stroke may end.
+ *
+ * **`MIN_TAIL_WIDTH` is the load-bearing one.** A traced skeleton is a network whose contour ends
+ * are mostly junctions where other contours carry on, so a stroke thinning to nothing punches a
+ * hole at every place walls meet — which is exactly what the first ink brush did. Keeping the floor
+ * in the *validator* rather than only in the panel's slider range means a hand-written or stale
+ * metadata value cannot reintroduce it either.
+ */
+export const MAX_ENTRY_BULGE = 2.5;
+export const MIN_TAIL_WIDTH = 0.15;
 
 /**
  * Width bounds, in grid squares.
@@ -493,6 +533,18 @@ function readBrushes(
         MAX_TAPER_FRACTION,
         fallback.taperFraction,
       ),
+      entryBulge: readClamped(
+        fields.entryBulge,
+        1,
+        MAX_ENTRY_BULGE,
+        fallback.entryBulge,
+      ),
+      tailWidth: readClamped(
+        fields.tailWidth,
+        MIN_TAIL_WIDTH,
+        1,
+        fallback.tailWidth,
+      ),
       pressure: readClamped(fields.pressure, 0, 1, fallback.pressure),
     };
   }
@@ -611,6 +663,8 @@ function brushDiffers(before: BrushSettings, after: BrushSettings): boolean {
     before.nibAngleDegrees !== after.nibAngleDegrees ||
     before.nibContrast !== after.nibContrast ||
     before.taperFraction !== after.taperFraction ||
+    before.entryBulge !== after.entryBulge ||
+    before.tailWidth !== after.tailWidth ||
     before.pressure !== after.pressure
   );
 }

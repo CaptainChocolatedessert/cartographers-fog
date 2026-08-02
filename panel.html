@@ -283,7 +283,9 @@
               Hundredths of the stroke half-width. 0 is a hard edge — what Lines gives — and 100
               fades from the centreline outward, leaving no solid core.
             -->
-            <input type="range" id="feather" min="0" max="100" step="5" value="33" />
+            <!-- Step 1: the judged 1/3 default is 33%, which even steps cannot express - the slider sat at
+                 35 while the readout said 33. -->
+            <input type="range" id="feather" min="0" max="100" step="1" value="33" />
             <output id="featherValue">33%</output>
           </div>
           <p id="featherNote" class="hint"></p>
@@ -315,14 +317,12 @@
           <!-- Ink brush only: width varies along the stroke. -->
           <div id="inkOnly" hidden>
             <div class="row">
-              <label for="taper">Taper</label>
+              <label for="entryBulge">Entry</label>
               <!--
-                Percent of the whole stroke's length spent tapering, at each end. Applied to the
-                traced contour rather than to a masking segment, or every cut would look like the
-                brush had been lifted. Stops at 50%, where the two ends meet.
+                How much wider the stroke starts — a brush lands before it travels. 100% is no blob.
               -->
-              <input type="range" id="taper" min="0" max="50" step="2" value="20" />
-              <output id="taperValue">20%</output>
+              <input type="range" id="entryBulge" min="100" max="250" step="5" value="145" />
+              <output id="entryBulgeValue">145%</output>
             </div>
             <div class="row">
               <label for="pressure">Pressure</label>
@@ -330,8 +330,31 @@
               <input type="range" id="pressure" min="0" max="100" step="5" value="40" />
               <output id="pressureValue">40%</output>
             </div>
+            <div class="row">
+              <label for="taper">Lift</label>
+              <!--
+                Percent of the stroke's length spent thinning at the END only — the start has its
+                own Entry above, because a brush lands and lifts differently. Measured along the
+                traced contour rather than a masking segment, or every cut would look like a lift.
+              -->
+              <!-- Step 1, not 2: the 25% default is not reachable in even steps from 0, so the
+                   slider would snap to 26 and report a value the store never wrote. -->
+              <input type="range" id="taper" min="0" max="50" step="1" value="25" />
+              <output id="taperValue">25%</output>
+            </div>
+            <div class="row">
+              <label for="tailWidth">Tail</label>
+              <!--
+                How thin the stroke ends. Floored well above zero on purpose: the traced skeleton is
+                a network, so most stroke ends are junctions where other strokes carry on, and a
+                stroke that vanished would pinch the map wherever walls meet.
+              -->
+              <input type="range" id="tailWidth" min="15" max="100" step="5" value="45" />
+              <output id="tailWidthValue">45%</output>
+            </div>
             <p class="hint">
-              Closed shapes are never tapered — a loop has no ends to taper from.
+              Ends thin rather than vanish, so junctions stay joined. Closed shapes are left at full
+              width — a loop has no ends.
             </p>
           </div>
 
@@ -349,7 +372,7 @@
             <div class="row">
               <label for="nibContrast">Hairline</label>
               <!-- How thin the thinnest stroke gets. At 100% the nib is a round pen. -->
-              <input type="range" id="nibContrast" min="0" max="100" step="5" value="12" />
+              <input type="range" id="nibContrast" min="0" max="100" step="1" value="12" />
               <output id="nibContrastValue">12%</output>
             </div>
           </div>

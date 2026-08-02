@@ -4,8 +4,8 @@ import {
   contourFractions,
   inkWidths,
   nibWidths,
+  inkProfile,
   noise1,
-  taperAt,
   tangents,
 } from "./brushWidths";
 import type { SegmentProvenance, TracedSegment } from "../trace/chop";
@@ -152,28 +152,74 @@ describe("nibWidths", () => {
   });
 });
 
-describe("taperAt", () => {
-  it("is zero at both ends and one in the middle", () => {
-    expect(taperAt(0, 0.2)).toBeCloseTo(0, 9);
-    expect(taperAt(1, 0.2)).toBeCloseTo(0, 9);
-    expect(taperAt(0.5, 0.2)).toBeCloseTo(1, 9);
+describe("inkProfile", () => {
+  const shape = { taperFraction: 0.25, entryBulge: 1.5, tailWidth: 0.4 };
+
+  it("starts heavy, settles to full width, then lightens", () => {
+    // A brush lands loaded and lifts away, so the two ends do different things. The first ink brush
+    // was symmetric and this is the correction.
+    expect(inkProfile(0, shape)).toBeCloseTo(1.5, 6);
+    expect(inkProfile(0.5, shape)).toBeCloseTo(1, 6);
+    expect(inkProfile(1, shape)).toBeCloseTo(0.4, 6);
   });
 
-  it("reaches full width by the end of the taper span", () => {
-    expect(taperAt(0.2, 0.2)).toBeCloseTo(1, 6);
-    expect(taperAt(0.8, 0.2)).toBeCloseTo(1, 6);
+  it("never reaches zero at either end", () => {
+    // The whole reason this was rewritten. The skeleton is a network, so most contour ends are
+    // junctions where other contours carry on — a profile that vanished punched a hole at every
+    // place walls met (user, 2026-08-01: "makes the junctions look odd").
+    for (const tail of [0.15, 0.4, 1]) {
+      for (const t of [0, 0.001, 0.999, 1]) {
+        expect(inkProfile(t, { ...shape, tailWidth: tail })).toBeGreaterThan(0);
+      }
+    }
   });
 
-  it("is flat when taper is off", () => {
-    for (const t of [0, 0.5, 1]) expect(taperAt(t, 0)).toBe(1);
+  it("settles the entry blob faster than it lifts at the end", () => {
+    // A brush lands quicker than it leaves. Sharing one span would read as a bulge with a stroke
+    // attached rather than as a stroke that began heavy.
+    const settled = inkProfile(0.125, shape);
+    const lifting = inkProfile(1 - 0.125, shape);
+
+    expect(settled).toBeCloseTo(1, 6);
+    expect(lifting).toBeLessThan(1);
+  });
+
+  it("is flat when both effects are off", () => {
+    const flat = { taperFraction: 0, entryBulge: 1, tailWidth: 1 };
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      expect(inkProfile(t, flat)).toBeCloseTo(1, 9);
+    }
+  });
+
+  it("drops the blob without touching the lift, and vice versa", () => {
+    // Independent controls. If one silently drove the other, tuning either would be guesswork.
+    expect(inkProfile(0, { ...shape, entryBulge: 1 })).toBeCloseTo(1, 6);
+    expect(inkProfile(1, { ...shape, entryBulge: 1 })).toBeCloseTo(0.4, 6);
+    expect(inkProfile(0, { ...shape, tailWidth: 1 })).toBeCloseTo(1.5, 6);
+    expect(inkProfile(1, { ...shape, tailWidth: 1 })).toBeCloseTo(1, 6);
   });
 
   it("eases rather than ramping linearly", () => {
-    // A linear taper reads as a wedge — right for a chisel, wrong for a brush, whose tip lands and
-    // spreads. Halfway along the taper span, smoothstep is exactly 0.5 but its *shape* differs:
-    // a quarter of the way along it sits well below the linear 0.25.
-    expect(taperAt(0.05, 0.2)).toBeLessThan(0.25);
-    expect(taperAt(0.1, 0.2)).toBeCloseTo(0.5, 6);
+    // A linear change reads as a wedge — right for a chisel, wrong for a brush whose tip lands and
+    // spreads. A quarter of the way into the lift, smoothstep sits well above the linear value.
+    const quarterIn = inkProfile(1 - shape.taperFraction * 0.25, shape);
+    const linear = 0.4 + 0.6 * 0.25;
+
+    expect(quarterIn).toBeLessThan(linear);
+  });
+
+  it("always leaves the stroke reaching full width somewhere", () => {
+    // What the 0.5 ceiling on the span actually protects. Past a half, the lift starts before the
+    // entry blob has settled, so the mark never once reaches its nominal weight — the control stops
+    // meaning "lift at the end" and starts meaning "draw everything thin", which the Stroke slider
+    // already does and does better. Merely checking the value is finite cannot see this.
+    for (const taperFraction of [0.5, 2, 5, 100]) {
+      expect(inkProfile(0.5, { ...shape, taperFraction })).toBeCloseTo(1, 6);
+    }
+  });
+
+  it("treats a negative span as no lift at all", () => {
+    expect(inkProfile(1, { ...shape, taperFraction: -1 })).toBeCloseTo(1, 6);
   });
 });
 
@@ -234,7 +280,9 @@ describe("contourFractions", () => {
 describe("inkWidths", () => {
   const options = {
     halfWidth: 10,
-    taperFraction: 0.2,
+    taperFraction: 0.25,
+    entryBulge: 1.5,
+    tailWidth: 0.4,
     pressure: 0,
     seed: 1234,
   };
@@ -252,7 +300,9 @@ describe("inkWidths", () => {
     }
   });
 
-  it("thins at the true start and end of a contour", () => {
+  it("starts wider than full width and ends narrower", () => {
+    // The asymmetry, end to end through the real entry point. A brush lands loaded and lifts away,
+    // so the first piece of a contour is *heavier* than its middle and the last is lighter.
     const first = inkWidths(
       [segment(ray(0), { startFraction: 0, endFraction: 0.1 })],
       options,
@@ -262,8 +312,25 @@ describe("inkWidths", () => {
       options,
     )[0]!;
 
-    expect(first[0]!).toBeLessThan(first[first.length - 1]!);
+    expect(first[0]!).toBeGreaterThan(options.halfWidth);
+    expect(first[0]!).toBeGreaterThan(first[first.length - 1]!);
+    expect(last[last.length - 1]!).toBeLessThan(options.halfWidth);
     expect(last[last.length - 1]!).toBeLessThan(last[0]!);
+  });
+
+  it("leaves both ends with real width, so junctions stay joined", () => {
+    // The defect this profile replaced. Contour ends are mostly junctions where other contours
+    // carry on, so an end at zero width pinched the map wherever walls met.
+    const ends = [
+      inkWidths([segment(ray(0), { startFraction: 0, endFraction: 0.05 })], options)[0]!,
+      inkWidths([segment(ray(0), { startFraction: 0.95, endFraction: 1 })], options)[0]!,
+    ];
+
+    for (const widths of ends) {
+      for (const w of widths) {
+        expect(w).toBeGreaterThan(options.halfWidth * options.tailWidth * 0.9);
+      }
+    }
   });
 
   it("never tapers a closed contour", () => {
@@ -293,18 +360,16 @@ describe("inkWidths", () => {
     for (const w of varied) expect(w).toBeGreaterThan(0);
   });
 
-  it("floors the width so a tapered tip is thin, never absent", () => {
-    // At the very start of an open contour the taper profile is exactly zero, so without a floor
-    // the first points carry no width at all. A zero-radius slot draws nothing, which reads as a
-    // gap at the end of every wall rather than as a brush tip.
-    const tip = inkWidths(
-      [segment(ray(0), { startFraction: 0, endFraction: 0.05 })],
-      options,
+  it("floors the width even when asked for a stroke that ends at nothing", () => {
+    // `MIN_TAIL_WIDTH` keeps stored settings off zero, but this module is reachable directly and a
+    // zero-radius slot draws nothing at all — a gap in the wall rather than a light touch. The
+    // floor is the backstop for a caller that skipped validation, so it is tested by skipping it.
+    const vanishing = inkWidths(
+      [segment(ray(0, 12), { startFraction: 0.9, endFraction: 1 })],
+      { ...options, tailWidth: 0, pressure: 1 },
     )[0]!;
 
-    expect(tip[0]!).toBeGreaterThan(0);
-    // Still visibly a taper — the floor is a floor, not a defeat of the effect.
-    expect(tip[0]!).toBeLessThan(options.halfWidth * 0.25);
+    for (const w of vanishing) expect(w).toBeGreaterThan(0);
   });
 
   it("is deterministic", () => {
