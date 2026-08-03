@@ -458,12 +458,30 @@ async function pollMotion(): Promise<void> {
     // All readings issued together. Awaiting them one light at a time made a poll cost N round
     // trips, so the sampling interval degraded with the number of lights in the scene — and the
     // interval is exactly what decides whether a fast drag leaves holes.
+    // **Only lights that can actually move are tracked**, and leaving fixtures in here was a
+    // genuinely nasty bug. A `SECONDARY` light is skipped by the flush — a brazier has no path
+    // worth replaying — but the flush deletes its trajectory on the way past and never records
+    // where it was last sampled from. So on the next poll it had no buffer and no last position,
+    // its measured travel came out `Infinity`, and it counted as having just moved. Every poll.
+    //
+    // That mattered because recording movement pushes the pending write further out, to let a
+    // drag settle before writing. At a 40ms poll against an 800ms debounce, three fixtures held
+    // the write open indefinitely: the region grew in memory and *nothing was ever persisted*,
+    // which looks perfect until the scene is reloaded and an hour of exploration is gone.
+    //
+    // Filtering here rather than in the loop also saves a `getItemBounds` round trip per fixture
+    // per poll, and round trips are the binding constraint on sampling density.
+    const moving = snapshot.lights.filter(
+      (light) => light.lightType === "PRIMARY",
+    );
+    if (moving.length === 0) return;
+
     const positions = await Promise.all(
-      snapshot.lights.map((light) => livePosition(light.id)),
+      moving.map((light) => livePosition(light.id)),
     );
     const now = performance.now();
 
-    for (const [index, light] of snapshot.lights.entries()) {
+    for (const [index, light] of moving.entries()) {
       const at = positions[index];
       if (!at) continue;
 
@@ -830,7 +848,23 @@ export async function clearDiscoveredRegion(): Promise<void> {
 }
 
 async function persist(): Promise<void> {
-  if (!discovered || !isGm || !regionDirty) return;
+  // **Says why it declined, rather than returning silently.** A skipped write looks exactly like a
+  // write that was never scheduled, and the two want opposite fixes — one is a guard firing, the
+  // other is the debounce never elapsing. A whole session went by with the region growing in
+  // memory and nothing reaching storage, and this path reported none of it.
+  if (!discovered || !isGm || !regionDirty) {
+    devLog(
+      "info",
+      `region: persist skipped — ${
+        !discovered
+          ? "no region in memory"
+          : !isGm
+            ? "not the writer"
+            : "nothing new since the last write"
+      }`,
+    );
+    return;
+  }
 
   const cells = countSet(discovered);
   const ok = await writeRegion(discovered);
