@@ -200,6 +200,30 @@ pieces where two of them see the same brazier, which the even-odd stencil turns 
 patches: mottle over ground the party can see. That is the harmless direction, and not worth a union
 operation to avoid.
 
+##### A secondary light can move, and that cost a persistence bug
+
+`SECONDARY` reads as "fixture", and it does not mean that — it means *only revealed in line of
+sight*, which says nothing about motion. An NPC carrying a lantern is one (user, 2026-08-03), and
+its path deserves recording exactly as a torch's does. So every light is polled, and a non-primary
+light's recorded track is replayed with each position's lit polygon clipped to the party's current
+line of sight. The snapshot therefore carries the sight polygons, and the clip rule is shared with
+the watcher rather than written twice — two copies would drift, and a light type honoured in one
+half of the pipeline and ignored in the other is what caused the parchment holes in the first place.
+
+**The bug that produced the wrong lesson is worth keeping.** An intermediate version skipped
+non-primary lights in the poll, on the theory that fixtures do not move. The actual defect was
+elsewhere: the flush deleted a light's trajectory and skipped it *before* recording where it had
+last been sampled from, so the next poll found no reference point, measured its travel as
+`Infinity`, and counted it as having just moved — every poll, forever. Since recording movement
+pushes the debounced region write further out to let a drag settle, three motionless braziers at a
+40ms poll held an 800ms debounce open indefinitely. The region grew correctly in memory and **was
+never written once**. That looks perfect in a live scene and loses everything on reload, which is
+the whole point of the discovered region.
+
+Two things follow. `lastSampled` must be maintained for every light the flush sees, whatever it
+does with it. And `persist()` no longer declines silently — a skipped write looked identical to one
+never scheduled, and those want opposite fixes.
+
 ##### The clipper, and why it is fans rather than a general one
 
 `geometry/starClip.ts`, pure and tested. General simple-polygon intersection means Greiner–Hormann

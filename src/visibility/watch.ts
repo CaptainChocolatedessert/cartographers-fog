@@ -29,9 +29,8 @@ import OBR, {
 import { devLog } from "../devlog";
 import { computeVisibilityPolygon } from "./visibility";
 import { wallsToSegments } from "./walls";
-import { intersectStarPolygons } from "../geometry/starClip";
-import { pointInPolygon } from "../geometry/polygon";
-import { simplifyPolyline } from "../trace/simplify";
+import { type StarPolygon } from "../geometry/starClip";
+import { litInSight } from "./litInSight";
 import type { Segment } from "../geometry/segment";
 import type { Vector2 } from "../geometry/vector";
 
@@ -46,6 +45,15 @@ export interface VisibilitySnapshot {
   segments: Segment[];
   /** One entry per light that produced a usable polygon. */
   views: LightView[];
+  /**
+   * The party's line of sight — one entry per light that reveals on its own, swept at map scale.
+   *
+   * Exposed because the region tracker needs it to replay a *moving* secondary light: a lantern
+   * carried by an NPC lights ground as it goes, and what the party remember of that is gated on
+   * the same line of sight the watcher uses for the current frame. Empty when no light depends on
+   * it, since the sweep is then not run at all.
+   */
+  sight: StarPolygon[];
   elapsedMs: number;
 }
 
@@ -186,7 +194,7 @@ async function recompute(): Promise<void> {
 
     const startedAt = performance.now();
     const segments = wallsToSegments(walls);
-    const views = sweepLights(lights, segments);
+    const { views, sight } = sweepLights(lights, segments);
     const elapsedMs = performance.now() - startedAt;
 
     const snapshot: VisibilitySnapshot = {
@@ -194,6 +202,7 @@ async function recompute(): Promise<void> {
       lights,
       segments,
       views,
+      sight,
       elapsedMs,
     };
     lastSnapshot = snapshot;
@@ -203,31 +212,6 @@ async function recompute(): Promise<void> {
   }
 }
 
-/** Vertex budget for the polygons handed to the clipper — see `sweepLights`. */
-const CLIP_TOLERANCE = 4;
-
-/**
- * Smallest intersection piece worth keeping, in square world units.
- *
- * Deliberately near zero. This was briefly raised to 225 to stop the parchment stencil blowing its
- * command budget on slivers — but the stencil no longer punches a ring per piece, it rasterises
- * the union, so the budget pressure is gone and dropping pieces only leaves **gaps**. One dropped
- * piece is one unset cell, and a single unset cell traces as a small diamond of parchment sitting
- * inside a lit room, which is precisely what showed up on screen. Keep the slivers; the mask
- * cannot tell the difference and the outline no longer has holes punched in it.
- */
-const MIN_PIECE_AREA = 1e-6;
-
-/** Average of a convex piece's vertices, which for a convex polygon is strictly interior. */
-function pieceCentroid(piece: readonly Vector2[]): Vector2 {
-  let x = 0;
-  let y = 0;
-  for (const point of piece) {
-    x += point.x;
-    y += point.y;
-  }
-  return { x: x / piece.length, y: y / piece.length };
-}
 
 /**
  * How far a light can *see*, as opposed to how far it lights.
@@ -283,9 +267,12 @@ function sightRadius(segments: readonly Segment[]): number {
  * with the party and is looked at directly — and only the secondary-derived pieces are built from
  * simplified geometry, where a few units of raggedness is explicitly acceptable.
  */
-function sweepLights(lights: readonly Light[], segments: Segment[]): LightView[] {
+function sweepLights(
+  lights: readonly Light[],
+  segments: Segment[],
+): { views: LightView[]; sight: StarPolygon[] } {
   const views: LightView[] = [];
-  const sight: { origin: Vector2; polygon: Vector2[] }[] = [];
+  const sight: StarPolygon[] = [];
   const secondary: { light: Light; polygon: Vector2[] }[] = [];
 
   // Nothing needs line of sight unless a light depends on it, and the sight sweep is the expensive
@@ -332,46 +319,19 @@ function sweepLights(lights: readonly Light[], segments: Segment[]): LightView[]
     if (polygon.length >= 3) secondary.push({ light, polygon });
   }
 
-  // Clipped after every primary is known, since a secondary may be seen from any of them.
+  // Clipped after every primary is known, since a secondary may be seen from any of them. The
+  // rule itself lives in `litInSight` because the region tracker needs the identical answer when
+  // it replays a moving light's path, and two copies of it would drift.
   for (const entry of secondary) {
-    const simplified = simplifyPolyline(entry.polygon, CLIP_TOLERANCE);
-    if (simplified.length < 3) continue;
-
-    for (const seen of sight) {
-      const pieces = intersectStarPolygons(
-        { origin: entry.light.position, polygon: simplified },
-        {
-          origin: seen.origin,
-          polygon: simplifyPolyline(seen.polygon, CLIP_TOLERANCE),
-        },
-        MIN_PIECE_AREA,
-      );
-
-      for (const piece of pieces) {
-        // **Checked against the polygons as swept, not as simplified.** Simplification is what
-        // makes the clip affordable, but a *non-convex* polygon can bulge outward when vertices
-        // are dropped — and the line-of-sight polygon is emphatically non-convex. A piece sitting
-        // in a bulge would be a hole in the parchment where the party can see nothing, which is
-        // the one error that reveals a room exists. The convexity argument that makes the pieces
-        // themselves sound does not cover their clip region, so this closes it directly.
-        //
-        // The centroid rather than every vertex: a piece's corners legitimately lie *on* a
-        // boundary, where point-in-polygon promises nothing, and a convex piece's centroid is
-        // squarely inside it.
-        const centroid = pieceCentroid(piece);
-        if (!pointInPolygon(centroid, seen.polygon)) continue;
-        if (!pointInPolygon(centroid, entry.polygon)) continue;
-
-        // Each piece stands alone. Two primaries that both see the same brazier will produce
-        // overlapping pieces, which the parchment's even-odd rule turns back into filled patches —
-        // mottle over somewhere the party can see, which is the harmless direction and not worth
-        // a union operation to avoid.
-        views.push({ light: entry.light, polygon: piece });
-      }
+    for (const piece of litInSight(entry.polygon, entry.light.position, sight)) {
+      // Each piece stands alone. Two primaries that both see the same brazier produce overlapping
+      // pieces, which is harmless now the overlay unions them in a bitmap rather than punching a
+      // ring each.
+      views.push({ light: entry.light, polygon: piece });
     }
   }
 
-  return views;
+  return { views, sight };
 }
 
 /**

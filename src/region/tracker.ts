@@ -41,6 +41,7 @@ import {
 import { clearWash } from "./wash";
 import { clearParchment, renderParchment } from "./parchmentOverlay";
 import { visibleShape } from "./visibleShape";
+import { litInSight } from "../visibility/litInSight";
 import {
   onSketchSettingsChange,
   readSketchSettings,
@@ -458,30 +459,23 @@ async function pollMotion(): Promise<void> {
     // All readings issued together. Awaiting them one light at a time made a poll cost N round
     // trips, so the sampling interval degraded with the number of lights in the scene — and the
     // interval is exactly what decides whether a fast drag leaves holes.
-    // **Only lights that can actually move are tracked**, and leaving fixtures in here was a
-    // genuinely nasty bug. A `SECONDARY` light is skipped by the flush — a brazier has no path
-    // worth replaying — but the flush deletes its trajectory on the way past and never records
-    // where it was last sampled from. So on the next poll it had no buffer and no last position,
-    // its measured travel came out `Infinity`, and it counted as having just moved. Every poll.
+    // **Every light is polled, including the ones that do not reveal on their own.** An earlier
+    // fix filtered these out on the theory that a SECONDARY light is a fixture — but that type
+    // means "only visible in line of sight", which says nothing about whether it moves. An NPC
+    // carrying a lantern is exactly that, and it has a path worth recording (user, 2026-08-03).
     //
-    // That mattered because recording movement pushes the pending write further out, to let a
-    // drag settle before writing. At a 40ms poll against an 800ms debounce, three fixtures held
-    // the write open indefinitely: the region grew in memory and *nothing was ever persisted*,
-    // which looks perfect until the scene is reloaded and an hour of exploration is gone.
-    //
-    // Filtering here rather than in the loop also saves a `getItemBounds` round trip per fixture
-    // per poll, and round trips are the binding constraint on sampling density.
-    const moving = snapshot.lights.filter(
-      (light) => light.lightType === "PRIMARY",
-    );
-    if (moving.length === 0) return;
-
+    // What actually went wrong was tracking *state*, not the polling: the flush deleted a light's
+    // trajectory and skipped it before recording where it had been sampled from, so the next poll
+    // found no reference point, measured its travel as `Infinity`, and counted it as having just
+    // moved — every poll, forever. Since recording movement pushes the pending write further out,
+    // three motionless braziers held the region write open indefinitely. `lastSampled` is now set
+    // for every light the flush sees, which fixes it at the cause.
     const positions = await Promise.all(
-      moving.map((light) => livePosition(light.id)),
+      snapshot.lights.map((light) => livePosition(light.id)),
     );
     const now = performance.now();
 
-    for (const [index, light] of moving.entries()) {
+    for (const [index, light] of snapshot.lights.entries()) {
       const at = positions[index];
       if (!at) continue;
 
@@ -555,16 +549,12 @@ async function flushTracks(lightIds: string[]): Promise<void> {
       const light = snapshot.lights.find((candidate) => candidate.id === lightId);
       if (!light) continue;
 
-      // **Primary only, and this is the second place the rule has to be applied.** The watcher
-      // decides what is *currently* visible; this replays a light's recorded path so a drag
-      // discovers the corridor it crossed rather than only its endpoints. Both write the region,
-      // so a light type honoured in one and ignored in the other produces exactly the bug this
-      // fixed: rooms lit by a fixture stopped being called visible, kept being called discovered,
-      // and so began sketching themselves in the moment the suppression lifted (user, 2026-08-02).
-      //
-      // A fixture does not move, so it has no path worth replaying; what the party can see of one
-      // arrives through the snapshot below.
-      if (light.lightType !== "PRIMARY") continue;
+      // A light that does not reveal on its own still contributes where the party can see its lit
+      // area — and if it is moving, along its whole path, for the same reason a torch does. The
+      // rule is shared with the watcher (`litInSight`) so the two cannot drift; a light type
+      // honoured in one half of the pipeline and ignored in the other is what put holes in the
+      // parchment over rooms nobody had entered.
+      const revealsAlone = light.lightType === "PRIMARY";
 
       const cellsBefore = countSet(discovered);
       let longestStep = 0;
@@ -594,7 +584,17 @@ async function flushTracks(lightIds: string[]): Promise<void> {
           facing: (light.rotation * Math.PI) / 180,
         });
         if (polygon.length >= 3) {
-          rasterizePolygon(discovered, polygon);
+          if (revealsAlone) {
+            rasterizePolygon(discovered, polygon);
+          } else {
+            // Clipped against the party's line of sight *as it is now*. The sweep it was seen from
+            // is not recorded per point, and a flush lands a quarter second after movement stops,
+            // so the two are near enough — and erring toward the current sweep loses ground rather
+            // than inventing it, which is the safe direction.
+            for (const piece of litInSight(polygon, point.at, snapshot.sight)) {
+              rasterizePolygon(discovered, piece);
+            }
+          }
           lastPolygon = polygon;
         }
 
