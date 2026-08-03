@@ -266,9 +266,19 @@ since a pie slice's boundary passes through its light where a full circle's must
 `outerAngle` rather than `innerAngle`: inner is where falloff begins, so sweeping it would
 under-report the dim fringe, and §4 records why under-reporting is the worse error.
 
-**The convention is assumed, not verified** — cone centred on the light's rotation, `outerAngle` the
-total width — in the same spirit as `FRONT_SIDE_SIGN`, because no cone light has been available to
-test against. What makes that safe to ship is a property rather than a hope: **a cone of any facing
+**The convention is wrong, confirmed in a room 2026-08-03 and deliberately left unfixed.** It was
+assumed — cone centred on the light's rotation, `outerAngle` the total width — in the same spirit as
+`FRONT_SIDE_SIGN`, because no cone light had been available to test against. One has now been tried,
+on an NPC, and it does not behave correctly (user; they asked for it to be recorded rather than
+fixed).
+
+The likely candidates, in order: `outerAngle` is a **half**-angle rather than the full width; the
+wedge is not centred on `rotation` at all, since an attached light may inherit its parent's rotation
+or carry a separate facing; or the angle runs in the opposite sense to `angleOf`. The way in is to
+log a real cone light's `rotation`, `innerAngle` and `outerAngle` and compare the swept wedge with
+what the fog actually reveals — the visibility tick already prints the cone angle.
+
+What makes this a wrong picture rather than a spoiler is the property below. What makes that safe to ship is a property rather than a hope: **a cone of any facing
 is a subset of the full circle**, so a wrong guess can only ever reveal less than the previous
 behaviour did, never more. It cannot introduce a reveal that was not already happening. A test pins
 that subset property across twelve facings.
