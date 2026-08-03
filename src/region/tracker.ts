@@ -651,14 +651,8 @@ async function render(): Promise<void> {
     // **The sketch mask still gets the polygons at full precision**, deliberately — §3 is explicit
     // that the visible boundary is the one that moves with the party and is looked at directly, so
     // only the overlay, which needs rings rather than point tests, pays the quantisation.
-    // Captured rather than read through the module binding: the awaits above mean TypeScript can
-    // no longer prove it is still set, and it genuinely could be cleared by a scene change
-    // mid-render.
-    const shapeGrid = grid;
     const startedShape = performance.now();
-    const shape = shapeGrid
-      ? visibleShape(shapeGrid, visiblePolygons)
-      : { rings: [], cellsCovered: 0, cellsKept: 0 };
+    const shape = visibleShape(visiblePolygons, sceneDpi);
     const shapeMs = performance.now() - startedShape;
 
     const parchment = await renderParchment(

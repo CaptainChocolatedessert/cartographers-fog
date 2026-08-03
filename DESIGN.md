@@ -1845,8 +1845,51 @@ and exists solely to pay for the simplifier** — Douglas–Peucker cutting acro
 the boundary outward, and outward next to a wall means into the room beyond it. Smoothing a raster
 without eroding first reintroduces exactly the failure being prevented.
 
-The cost is that the visible region sits a cell inside the truth — about four world units against a
-150-unit grid square on the test map, invisible next to the mottle it is cutting.
+##### The mask is built for this job, and borrowing the region's grid was wrong
+
+The first version rasterised into the **region's own** cell grid, on the reasoning that it already
+existed and was sized sensibly. It is sized sensibly for something else: it is persisted, spans the
+whole map, and trades precision against encoded size. On a real map that lands near a *quarter of a
+grid square* per cell — measured in a room at 2 rings from 201/298 cells, so the entire lit area was
+under three hundred cells. Three things were wrong at once: the outline was visibly chunky, the
+erosion bit a quarter-square inward, and each redraw spent ~60ms scanning a whole-map grid to find a
+region occupying a fraction of it.
+
+The mask here is **transient, never stored, and only has to cover what is currently visible**, so it
+is now built fresh over the visible bounds at sixteen cells per grid square — about 9 world units.
+Because it covers a room or two rather than a map, the cell count *falls* while the cells get four
+times finer. Total cells are capped, coarsening rather than clipping, so lights scattered across a
+huge map degrade to a blockier outline instead of a pause.
+
+The lesson generalises: **a grid sized for storage is not a grid sized for a boundary**, and the two
+had no business being the same object.
+
+##### Enclosed gaps are filled; genuine holes are not
+
+Clipping a lit area to line of sight leaves the occasional one-cell gap where a piece was dropped,
+and a single unset cell traces as a small **diamond** — which is exactly how it appeared on screen.
+A gap *enclosed by visible cells* is surrounded by ground the party can see, so filling it cannot
+reveal anything past a wall; that is what makes this sound where a general dilation would not be,
+since dilation moves the outer boundary too. Bounded by size, so a pillar standing in a lit room
+keeps its parchment. Tests pin both directions — removing the fill and removing the bound each fail.
+
+The related cause is worth recording: the slivers being dropped were only ever dropped to keep the
+stencil inside its command budget, and that pressure vanished when the stencil stopped punching a
+ring per piece. Dropping them afterwards bought nothing and cost gaps.
+
+##### Containment is bounded by resolution, not absolute
+
+The traced contour runs midway between a kept cell centre and a dropped one, so against a feature
+finer than a couple of cells it can bow **up to half a cell** outside the source. A test fixture
+with 22-unit teeth against 9-unit cells failed for exactly that reason, and the honest response was
+to state the bound rather than to loosen the fixture: a test now asserts the half-cell envelope
+explicitly, alongside one that asserts strict containment at feature sizes the mask does resolve.
+
+Half a cell is a few world units against walls tens of units thick, so the overshoot cannot cross a
+wall into the room beyond — which is the requirement that actually matters.
+
+The remaining cost is that the visible region sits a cell inside the truth — about 9 world units
+against a 150-unit grid square, invisible next to the mottle it is cutting.
 
 **The sketch mask still gets the polygons at full precision.** Only the overlay, which needs rings
 rather than point tests, pays the quantisation — which keeps the §3 decision that the *visible*

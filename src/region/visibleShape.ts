@@ -60,6 +60,42 @@ import type { Vector2 } from "../geometry/vector";
  */
 const SIMPLIFY_SHARE = 0.8;
 
+/**
+ * Cells per grid square for the transient mask this module rasterises into.
+ *
+ * **Not the region's own grid, and reusing that one was a mistake worth recording.** The region
+ * grid is sized for something else entirely: it is persisted, covers the whole map, and trades
+ * precision for encoded size. On a large map that lands around a quarter of a grid square per
+ * cell — which quantised the visible outline into something visibly chunky, made the erosion bite
+ * a quarter-square inward, and cost ~60ms per redraw scanning a whole-map grid to find a region
+ * occupying under three hundred cells of it.
+ *
+ * This mask is transient, never stored, and only ever needs to cover what is currently visible. So
+ * it is built fresh over the visible bounds at a resolution chosen for the boundary rather than for
+ * storage. Sixteen per square is about 9 world units on the shipped grid — comfortably finer than
+ * the mottle it is cutting — and because it covers a room or two rather than a map, the cell count
+ * *falls* even as the cells shrink.
+ */
+const CELLS_PER_SQUARE = 16;
+
+/**
+ * Ceiling on the transient mask, so a scene with lights scattered across a huge map degrades to
+ * coarser cells rather than to a pause. Cells are made bigger until it fits.
+ */
+const MAX_MASK_CELLS = 400_000;
+
+/**
+ * Enclosed gaps up to this many cells are filled before the outline is traced.
+ *
+ * Clipping a lit area to line of sight leaves the odd one-cell gap where a piece was dropped, and
+ * a single unset cell traces as a small diamond — which is exactly the artefact it looked like on
+ * screen. Filling is sound here in the way a general dilation would not be: a gap **enclosed by
+ * visible cells** is surrounded by ground the party can see, so filling it cannot reveal anything
+ * beyond a wall. Bounded by size so a genuine hole — a pillar standing in a lit room, which the
+ * party really cannot see behind — survives and keeps its parchment.
+ */
+const MAX_FILLED_GAP_CELLS = 12;
+
 /** Rings bounding the visible region, in world space, ready to punch as stencil holes. */
 export interface VisibleShape {
   readonly rings: Vector2[][];
@@ -72,19 +108,23 @@ export interface VisibleShape {
 /**
  * Trace the union of `polygons` into rings.
  *
- * @param grid the region's own cell grid, reused so this inherits its sizing decisions rather
- * than inventing another. Its resolution is the fidelity ceiling here.
+ * @param dpi world units per grid square, which sets the mask's resolution. The mask is built
+ * here rather than passed in — see `CELLS_PER_SQUARE` for why the region's own grid is the wrong
+ * one to borrow.
  */
 export function visibleShape(
-  grid: CellGrid,
   polygons: readonly (readonly Vector2[])[],
+  dpi: number,
 ): VisibleShape {
+  const usable = polygons.filter((polygon) => polygon.length >= 3);
+  const grid = maskGridFor(usable, dpi);
+  if (!grid) return { rings: [], cellsCovered: 0, cellsKept: 0 };
+
   const mask = createMask(grid);
-  for (const polygon of polygons) {
-    if (polygon.length >= 3) rasterizePolygon(mask, polygon);
-  }
+  for (const polygon of usable) rasterizePolygon(mask, polygon);
 
   const covered = countCells(mask);
+  fillEnclosedGaps(mask);
   const eroded = erode(mask);
   const kept = countCells(eroded);
   if (kept === 0) {
@@ -118,6 +158,137 @@ export function visibleShape(
   }
 
   return { rings, cellsCovered: covered, cellsKept: kept };
+}
+
+/**
+ * A mask covering everything visible, at a resolution chosen for the boundary.
+ *
+ * One cell of slack all round, so the border of zeroes the tracer needs is genuinely outside the
+ * region and every ring closes into a loop rather than running off the edge.
+ *
+ * @returns `undefined` when there is nothing to cover.
+ */
+function maskGridFor(
+  polygons: readonly (readonly Vector2[])[],
+  dpi: number,
+): CellGrid | undefined {
+  if (polygons.length === 0) return undefined;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const polygon of polygons) {
+    for (const point of polygon) {
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
+  }
+  if (!(maxX > minX) || !(maxY > minY)) return undefined;
+
+  const width = maxX - minX;
+  const height = maxY - minY;
+  let cellSize = (dpi > 0 ? dpi : 150) / CELLS_PER_SQUARE;
+
+  // Coarsen rather than clip, so a scene with lights spread across a big map loses precision
+  // instead of losing area — the same trade the region's own grid makes.
+  while ((width / cellSize + 3) * (height / cellSize + 3) > MAX_MASK_CELLS) {
+    cellSize *= 2;
+  }
+
+  return {
+    origin: { x: minX - cellSize, y: minY - cellSize },
+    cellSize,
+    columns: Math.ceil(width / cellSize) + 3,
+    rows: Math.ceil(height / cellSize) + 3,
+  };
+}
+
+/**
+ * Fill unset regions that do not touch the mask's border, up to `MAX_FILLED_GAP_CELLS`.
+ *
+ * A flood fill from the border marks everything outside; whatever unset cells it never reaches are
+ * enclosed, and therefore surrounded by ground the party can see. Filling those cannot reveal
+ * anything past a wall, which is what separates this from a general dilation — a dilation would
+ * push the *outer* boundary outward too, and outward beside a wall is the one move that is not
+ * allowed here.
+ */
+function fillEnclosedGaps(mask: RegionMask): void {
+  const { grid } = mask;
+  const total = grid.columns * grid.rows;
+  const outside = new Uint8Array(total);
+  const queue: number[] = [];
+
+  const consider = (column: number, row: number): void => {
+    if (!isInside(grid, column, row)) return;
+    const index = row * grid.columns + column;
+    if (outside[index] === 1 || isSet(mask, column, row)) return;
+    outside[index] = 1;
+    queue.push(index);
+  };
+
+  for (let column = 0; column < grid.columns; column++) {
+    consider(column, 0);
+    consider(column, grid.rows - 1);
+  }
+  for (let row = 0; row < grid.rows; row++) {
+    consider(0, row);
+    consider(grid.columns - 1, row);
+  }
+
+  while (queue.length > 0) {
+    const index = queue.pop()!;
+    const column = index % grid.columns;
+    const row = (index - column) / grid.columns;
+    consider(column - 1, row);
+    consider(column + 1, row);
+    consider(column, row - 1);
+    consider(column, row + 1);
+  }
+
+  // Every unset cell the flood never reached is enclosed. Group them so a big genuine hole — a
+  // pillar — is kept while the one-cell gaps left by a dropped clip piece are filled.
+  const visited = new Uint8Array(total);
+  for (let row = 0; row < grid.rows; row++) {
+    for (let column = 0; column < grid.columns; column++) {
+      const index = row * grid.columns + column;
+      if (outside[index] === 1 || visited[index] === 1) continue;
+      if (isSet(mask, column, row)) continue;
+
+      const group: number[] = [];
+      const pending = [index];
+      visited[index] = 1;
+      while (pending.length > 0) {
+        const current = pending.pop()!;
+        group.push(current);
+        const currentColumn = current % grid.columns;
+        const currentRow = (current - currentColumn) / grid.columns;
+        for (const [dx, dy] of [
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1],
+        ] as const) {
+          const nextColumn = currentColumn + dx;
+          const nextRow = currentRow + dy;
+          if (!isInside(grid, nextColumn, nextRow)) continue;
+          const next = nextRow * grid.columns + nextColumn;
+          if (visited[next] === 1 || outside[next] === 1) continue;
+          if (isSet(mask, nextColumn, nextRow)) continue;
+          visited[next] = 1;
+          pending.push(next);
+        }
+      }
+
+      if (group.length <= MAX_FILLED_GAP_CELLS) {
+        for (const cell of group) {
+          setCell(mask, cell % grid.columns, (cell - (cell % grid.columns)) / grid.columns);
+        }
+      }
+    }
+  }
 }
 
 /**

@@ -209,13 +209,14 @@ const CLIP_TOLERANCE = 4;
 /**
  * Smallest intersection piece worth keeping, in square world units.
  *
- * A fan intersection throws off a great many slivers along the seams between triangles, and each
- * costs as much to carry as a real piece: the parchment stencil hit its command budget and began
- * dropping cut-outs wholesale, which shows as mottle over ground the party can plainly see. About
- * a tenth of a grid square on the shipped 150-unit grid — far below anything visible, and dropping
- * is the safe direction anyway.
+ * Deliberately near zero. This was briefly raised to 225 to stop the parchment stencil blowing its
+ * command budget on slivers — but the stencil no longer punches a ring per piece, it rasterises
+ * the union, so the budget pressure is gone and dropping pieces only leaves **gaps**. One dropped
+ * piece is one unset cell, and a single unset cell traces as a small diamond of parchment sitting
+ * inside a lit room, which is precisely what showed up on screen. Keep the slivers; the mask
+ * cannot tell the difference and the outline no longer has holes punched in it.
  */
-const MIN_PIECE_AREA = 225;
+const MIN_PIECE_AREA = 1e-6;
 
 /** Average of a convex piece's vertices, which for a convex polygon is strictly interior. */
 function pieceCentroid(piece: readonly Vector2[]): Vector2 {
