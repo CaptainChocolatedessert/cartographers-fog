@@ -105,13 +105,36 @@ export function onRegionChange(
 ): () => void {
   return OBR.scene.onMetadataChange((metadata) => {
     const raw = (metadata as Record<string, unknown>)[REGION_KEY];
+
+    // Every `null` below means "drop the discovered region", which is destructive and irreversible.
+    // Three quite different things reach it — the key being absent from this event, a value that
+    // will not decode, and a region recorded against another grid — and they were previously
+    // indistinguishable at the call site. Naming which one fired is the difference between "the GM
+    // cleared it" and "we threw away an hour of exploration for no reason".
     if (raw === undefined) {
+      devLog("info", "region: change event carried no region key");
       callback(null);
       return;
     }
 
     const decoded = decodeRegion(raw);
-    callback(decoded && sameGrid(decoded.grid, grid) ? decoded : null);
+    if (!decoded) {
+      devLog("warn", "region: change event carried a value that would not decode");
+      callback(null);
+      return;
+    }
+
+    if (!sameGrid(decoded.grid, grid)) {
+      devLog(
+        "info",
+        `region: change event is for a ${decoded.grid.columns}x${decoded.grid.rows} grid, ` +
+          `this scene uses ${grid.columns}x${grid.rows}`,
+      );
+      callback(null);
+      return;
+    }
+
+    callback(decoded);
   });
 }
 

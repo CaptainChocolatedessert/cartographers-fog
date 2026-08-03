@@ -242,20 +242,45 @@ async function initialiseForScene(): Promise<void> {
     // without this a client would keep showing ground the scene no longer claims, and the GM
     // would write its stale copy straight back on the next move.
     if (!incoming) {
-      // Any pending write belongs to the region just cleared. Without cancelling it, a clear
-      // arriving while a token is settling would be undone a moment later by a debounced write of
-      // the pre-clear mask — and the clear would appear to have silently failed. `clearDiscoveredRegion`
-      // cancels its own timer, but a clear can now also arrive from the settings panel, which runs
-      // in its own iframe and shares none of this module's state.
-      if (persistTimer !== undefined) clearTimeout(persistTimer);
-      persistTimer = undefined;
-      regionDirty = false;
+      // **Confirmed against storage before anything is thrown away.** A change event reporting no
+      // region is ambiguous: it means "the GM cleared it", but it equally means "this event was
+      // about some other key". Acting on it directly cost an entire session's exploration — every
+      // scene metadata write zeroed the mask, cancelled the pending persist and cleared the dirty
+      // flag, so the region never survived long enough to be written even once, and the sketch
+      // only ever appeared in a band around the party.
+      //
+      // Discarding discovered ground is destructive and cannot be undone by anything short of
+      // re-walking the map, so it takes a positive confirmation rather than an absence. Re-reading
+      // costs one round trip on a path that should almost never fire.
+      void (async () => {
+        const confirmed = await readRegion(sceneGrid);
+        if (confirmed) {
+          // The event was about something else. Adopt what is actually stored and carry on.
+          if (discovered && unionInto(discovered, confirmed) > 0) void render();
+          return;
+        }
+        if (!discovered || !grid) return;
 
-      discovered = createMask(grid);
-      lastSampled.clear();
-      trajectory.clear();
-      lastRecordedAt.clear();
-      void render();
+        devLog(
+          "info",
+          `region: storage confirms no region, dropping ${countSet(discovered)} local cells`,
+        );
+
+        // Any pending write belongs to the region just cleared. Without cancelling it, a clear
+        // arriving while a token is settling would be undone a moment later by a debounced write
+        // of the pre-clear mask — and the clear would appear to have silently failed.
+        // `clearDiscoveredRegion` cancels its own timer, but a clear can also arrive from the
+        // settings panel, which runs in its own iframe and shares none of this module's state.
+        if (persistTimer !== undefined) clearTimeout(persistTimer);
+        persistTimer = undefined;
+        regionDirty = false;
+
+        discovered = createMask(grid);
+        lastSampled.clear();
+        trajectory.clear();
+        lastRecordedAt.clear();
+        void render();
+      })();
       return;
     }
 
