@@ -170,6 +170,24 @@ let polling = false;
 let flushing = false;
 
 /**
+ * Whether a region has ever actually been in storage for this scene.
+ *
+ * **This is what tells a deliberate clear apart from a scene that simply has nothing yet**, and
+ * without it the two are indistinguishable — an absent key means both. Reading absence as a clear
+ * produced a closed loop that made exploration impossible to start:
+ *
+ * Owlbear writes scene metadata of its own when a token moves. Every such write fires our
+ * subscription, which found no region — correctly, because none had been written — and so dropped
+ * the accumulating mask *and cancelled the pending write that would have created one*. Storage
+ * therefore stayed empty, so the next token move did it again. The region could never be written
+ * because it had not been written.
+ *
+ * It only bites once a scene's region has been cleared or has never existed, which is why it
+ * survived until an explored scene was reset.
+ */
+let regionEverStored = false;
+
+/**
  * Whether the region has grown since it was last written. Kept separate from the timer so that
  * deferring a write during movement cannot lose one: the flag survives any number of
  * reschedules, and a failed write leaves it set so the next settle tries again.
@@ -224,7 +242,9 @@ async function initialiseForScene(): Promise<void> {
   // squares, and `render` has no other route to the scene's dpi. Read once per scene rather than
   // per redraw: it cannot change without the scene changing, and redraws run several a second.
   sceneDpi = (await OBR.scene.grid.getDpi()) || 150;
-  discovered = (await readRegion(sceneGrid)) ?? createMask(sceneGrid);
+  const stored = await readRegion(sceneGrid);
+  regionEverStored = stored !== null;
+  discovered = stored ?? createMask(sceneGrid);
   lastSampled.clear();
   visiblePolygons = [];
 
@@ -242,6 +262,12 @@ async function initialiseForScene(): Promise<void> {
     // without this a client would keep showing ground the scene no longer claims, and the GM
     // would write its stale copy straight back on the next move.
     if (!incoming) {
+      // Nothing has ever been stored for this scene, so there is nothing to have been cleared and
+      // nothing to drop. Returning here is what breaks the loop described on `regionEverStored`:
+      // the pending write survives, lands, and from then on storage has a region to confirm
+      // against. Without it a reset scene can never begin accumulating again.
+      if (!regionEverStored) return;
+
       // **Confirmed against storage before anything is thrown away.** A change event reporting no
       // region is ambiguous: it means "the GM cleared it", but it equally means "this event was
       // about some other key". Acting on it directly cost an entire session's exploration — every
@@ -255,6 +281,7 @@ async function initialiseForScene(): Promise<void> {
       void (async () => {
         const confirmed = await readRegion(sceneGrid);
         if (confirmed) {
+          regionEverStored = true;
           // The event was about something else. Adopt what is actually stored and carry on.
           if (discovered && unionInto(discovered, confirmed) > 0) void render();
           return;
@@ -275,6 +302,7 @@ async function initialiseForScene(): Promise<void> {
         persistTimer = undefined;
         regionDirty = false;
 
+        regionEverStored = false;
         discovered = createMask(grid);
         lastSampled.clear();
         trajectory.clear();
@@ -286,6 +314,7 @@ async function initialiseForScene(): Promise<void> {
 
     // Union rather than replace. It is idempotent, so the GM seeing its own write echo back
     // costs nothing, and a player adopts the authoritative region without losing anything.
+    regionEverStored = true;
     if (unionInto(discovered, incoming) > 0) void render();
   });
 
@@ -379,6 +408,7 @@ async function teardownScene(): Promise<void> {
 
   grid = undefined;
   discovered = undefined;
+  regionEverStored = false;
   lastSampled.clear();
   visiblePolygons = [];
 
@@ -788,6 +818,7 @@ export async function clearDiscoveredRegion(): Promise<void> {
   persistTimer = undefined;
   regionDirty = false;
 
+  regionEverStored = false;
   discovered = createMask(grid);
   lastSampled.clear();
   trajectory.clear();
@@ -806,7 +837,11 @@ async function persist(): Promise<void> {
 
   // Cleared only on success. A failed write leaves the region dirty so the next time a token
   // settles it is tried again, rather than the discovered ground being silently dropped.
-  if (ok) regionDirty = false;
+  if (ok) {
+    regionDirty = false;
+    // The write landed, so absence from here on really would mean someone cleared it.
+    regionEverStored = true;
+  }
 
   devLog("info", `region: ${ok ? "persisted" : "FAILED to persist"} ${cells} cells`);
 }
