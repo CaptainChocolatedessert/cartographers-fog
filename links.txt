@@ -1,0 +1,3 @@
+https://captainchocolatedessert.github.io/cartographers-fog/manifest.json
+
+http://localhost:5173/cartographers-fog/manifest.json

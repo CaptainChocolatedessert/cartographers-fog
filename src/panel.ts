@@ -59,7 +59,6 @@ import {
 import { clearRegion, writeRegion } from "./region/store";
 import { buildSceneGrid } from "./region/sceneGrid";
 import { fillMask } from "./region/regionMask";
-import { devLog } from "./devlog";
 
 const element = <T extends HTMLElement>(id: string): T => {
   const found = document.getElementById(id);
@@ -147,6 +146,32 @@ let chosenMapId: string | undefined;
  * considered mistake.
  */
 const DISARM_MS = 4000;
+
+/**
+ * Report a failure so it survives a production build.
+ *
+ * **Not `devLog`.** That shim compiles away in production, so every error path in this panel threw
+ * its cause on the floor the moment it was deployed — the string "panel: failed to start" appears
+ * in none of the built chunks. A GM saw "The panel could not start." and there was no way, short of
+ * rebuilding locally, to learn why. DESIGN.md already records this rule for the CORS probe: anything
+ * reported to a user in production must go through `console.error`, which the dev shim forwards to
+ * `dev.log` anyway, so nothing is lost locally either.
+ *
+ * The cause is also folded into the visible message. A panel is often the only surface a GM has —
+ * expecting them to open a browser console to find out why their settings will not load is not a
+ * reasonable ask.
+ */
+function report(message: string, error: unknown): void {
+  console.error(`panel: ${message}`, error);
+
+  const detail =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "";
+  say(detail ? `${message} — ${detail}` : message);
+}
 
 function say(message: string): void {
   status.textContent = message;
@@ -440,8 +465,7 @@ function queueWallMargin(strokeWidths: number): void {
   marginWriteTimer = setTimeout(() => {
     marginWriteTimer = undefined;
     void writeWallMargin(strokeWidths).catch((error) => {
-      devLog("error", "panel: could not save the wall margin", error);
-      say("Could not save the wall margin.");
+      report("Could not save the wall margin", error);
     });
   }, WRITE_DEBOUNCE_MS);
 }
@@ -454,8 +478,7 @@ function queueAppearance(changes: Partial<Appearance>): void {
     pendingChanges = {};
     writeTimer = undefined;
     void writeAppearance(changesToWrite).catch((error) => {
-      devLog("error", "panel: could not save appearance", error);
-      say("Could not save that setting.");
+      report("Could not save that setting", error);
     });
   }, WRITE_DEBOUNCE_MS);
 }
@@ -555,8 +578,7 @@ async function choose(map: MapImageSummary): Promise<void> {
     say(`Sketching from "${map.name}". Tracing takes a moment.`);
     await refreshMaps();
   } catch (error) {
-    devLog("error", "panel: could not nominate a map", error);
-    say("Could not save that choice.");
+    report("Could not save that choice", error);
   }
 }
 
@@ -723,7 +745,7 @@ function installConfirm(
 
     disarm();
     void commit().catch((error) => {
-      devLog("error", `panel: ${idleLabel} failed`, error);
+      report(`${idleLabel} failed`, error);
       say("That did not work — see the log.");
     });
   });
@@ -776,8 +798,7 @@ async function start(): Promise<void> {
     // there is nothing to coalesce, and the debounce would only delay a grant by 200ms.
     void writeAppearance({ playersMayStyle: playersMayStyleInput.checked }).catch(
       (error) => {
-        devLog("error", "panel: could not save the player setting", error);
-        say("Could not save that setting.");
+        report("Could not save that setting", error);
       },
     );
   });
@@ -1006,8 +1027,7 @@ function installGmControls(): void {
             : "Could not save the explored area.",
         );
       } catch (error) {
-        devLog("error", "panel: could not mark the map explored", error);
-        say("Could not mark the map explored.");
+        report("Could not mark the map explored", error);
       } finally {
         revealAllButton.disabled = false;
       }
@@ -1021,8 +1041,7 @@ function installGmControls(): void {
         await refreshMaps();
         say("Sketch cleared. Pick a map above to bring it back.");
       } catch (error) {
-        devLog("error", "panel: could not clear the sketch", error);
-        say("Could not clear the sketch.");
+        report("Could not clear the sketch", error);
       }
     })();
   });
@@ -1081,7 +1100,6 @@ function installGmControls(): void {
 
 OBR.onReady(() => {
   void start().catch((error) => {
-    devLog("error", "panel: failed to start", error);
-    say("The panel could not start.");
+    report("The panel could not start", error);
   });
 });
