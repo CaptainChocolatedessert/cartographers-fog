@@ -2211,6 +2211,43 @@ failure as an expected outcome with backoff and retry, and distinguish `RateLimi
 `RecordValidationError` at every call site — retrying a size failure is futile, and giving up on
 a throttle loses data.
 
+### SDK rejections are not `Error`s — confirmed from a deployed panel 2026-08-04
+
+The SDK posts each call to the parent frame and rejects with the payload that comes back,
+unaltered, unwrapped and never converted. A scene call made with no scene open rejects with the
+plain object `{ error: { name: "MissingDataError", message: "No scene found" } }`. Nothing in it
+is an `Error`, so `error instanceof Error` is false for **every** failure the SDK can hand back,
+and `.message` on the rejection itself is `undefined`.
+
+Consequence for the two error classes named above: `RateLimitHit` and `RecordValidationError`
+arrive as *names inside a nested object*, not as error types to catch. Any site distinguishing
+them has to look there.
+
+This is why the panel's first attempt at reporting its own startup failure reported nothing. It
+tested for an `Error`, found none, and printed the bare headline — a diagnostic that read the same
+whether it had a cause or had none, which is the failure this document already records five times
+over. `src/describeError.ts` is the shared answer: it unwraps the envelope, names the error, and
+says so explicitly when there is genuinely nothing to describe. It is pure and tested, because the
+panel imports the SDK and so cannot be reached from a headless test at all.
+
+### The panel must not read the scene during startup — fixed 2026-08-04
+
+A popover is a freshly built frame, and its connection to Owlbear goes ready as soon as the
+message channel is up — which is **not** the moment the scene has been handed to that frame. The
+panel read the scene the instant startup reached that line, so the read landed too early and was
+refused, and the refusal propagated out of startup and abandoned the whole panel. The Appearance
+tab is room-scoped and would have worked; it died anyway.
+
+Deployed, this failed every time while the dev server did not, which inverts the usual
+expectation: the production build is two files from a CDN edge where the dev server is dozens of
+on-demand module transforms, so the faster build is the one that loses the race. (Plausible
+mechanism, not measured — a room with no scene open produces the identical error.)
+
+The scene-dependent half now sits behind `onReadyChange`, subscribed before the state is checked
+per the rule in §5, and is deliberately not awaited by startup. With no scene the Setup controls
+disable themselves and say why. **Nothing room-scoped may ever be sequenced behind a scene read
+again** — that ordering is what turned a recoverable, self-mending condition into a dead panel.
+
 ### Editing the fog directly — possible, but writes to the GM's own content
 
 Cutting holes in the fog over explored ground would let the real map show through natively —

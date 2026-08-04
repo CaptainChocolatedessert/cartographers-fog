@@ -240,6 +240,15 @@
         <h2>Map to sketch</h2>
         <div class="maps" id="maps"></div>
         <p id="mapsEmpty" hidden>No MAP-layer image in this scene.</p>
+        <!--
+          Everything in this tab belongs to the open scene, so with none open the controls below are
+          disabled and this says why. It sits after the heading rather than before it because the
+          stylesheet spares a tab panel's *first child* heading its top margin.
+        -->
+        <p id="noScene" hidden>
+          No scene is open. These settings belong to a scene — open one and they come back.
+          Appearance works either way.
+        </p>
 
         <hr />
         <!--

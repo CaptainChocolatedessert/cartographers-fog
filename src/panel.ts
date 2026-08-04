@@ -57,6 +57,7 @@ import {
   writeWallMargin,
 } from "./sketch/sketchSettings";
 import { clearRegion, writeRegion } from "./region/store";
+import { describeError } from "./describeError";
 import { buildSceneGrid } from "./region/sceneGrid";
 import { fillMask } from "./region/regionMask";
 
@@ -70,6 +71,7 @@ const gmOnly = element("gmOnly");
 const playerOnly = element("playerOnly");
 const mapsBox = element("maps");
 const mapsEmpty = element("mapsEmpty");
+const noScene = element("noScene");
 const rendererInput = element<HTMLSelectElement>("renderer");
 const rendererNote = element("rendererNote");
 const colorInput = element<HTMLInputElement>("color");
@@ -148,29 +150,41 @@ let chosenMapId: string | undefined;
 const DISARM_MS = 4000;
 
 /**
- * Report a failure so it survives a production build.
+ * The startup step in progress, for the console line when one of them fails.
  *
- * **Not `devLog`.** That shim compiles away in production, so every error path in this panel threw
- * its cause on the floor the moment it was deployed — the string "panel: failed to start" appears
- * in none of the built chunks. A GM saw "The panel could not start." and there was no way, short of
- * rebuilding locally, to learn why. DESIGN.md already records this rule for the CORS probe: anything
- * reported to a user in production must go through `console.error`, which the dev shim forwards to
- * `dev.log` anyway, so nothing is lost locally either.
- *
- * The cause is also folded into the visible message. A panel is often the only surface a GM has —
- * expecting them to open a browser console to find out why their settings will not load is not a
- * reasonable ask.
+ * `start()` is a long run of awaits and each one used to report the same sentence, so a failure said
+ * nothing about *where* it happened — six different causes, one indistinguishable message. Recording
+ * the step costs an assignment and turns "the panel could not start" into a line naming the call
+ * that refused.
  */
-function report(message: string, error: unknown): void {
-  console.error(`panel: ${message}`, error);
+let stage = "loading";
 
-  const detail =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
-  say(detail ? `${message} — ${detail}` : message);
+/**
+ * Report a failure: the whole of it to the console, a plain sentence to the panel.
+ *
+ * **Not `devLog`.** That shim compiles away in production, so every error path here threw its cause
+ * on the floor the moment it was deployed — the string "panel: failed to start" appears in none of
+ * the built chunks. DESIGN.md already records this rule for the CORS probe: anything reported to a
+ * user in production goes through `console.error`, which the dev shim forwards to `dev.log` anyway,
+ * so nothing is lost locally either.
+ *
+ * The described form leads the console line because a raw payload logs collapsed — `Object { error:
+ * {…} }` — and has to be expanded by hand before it says anything at all. The raw value follows it
+ * for the cases the one-liner does not cover.
+ *
+ * **The panel itself gets none of that** (user, 2026-08-04: it "doesn't have to be a debugging
+ * tool"). A GM wants to know their setting did not save; the name of the SDK error that refused it
+ * is noise to them and the console is a better home for it.
+ *
+ * @param hint appended on screen, for the one failure where the panel is wholly unusable and so
+ * worth saying where the reason can be found.
+ */
+function report(message: string, error: unknown, hint?: string): void {
+  console.error(
+    `panel: ${message} (${stage}) — ${describeError(error)}`,
+    error,
+  );
+  say(hint ? `${message}. ${hint}` : `${message}.`);
 }
 
 function say(message: string): void {
@@ -539,9 +553,95 @@ function pencilFromControls(): {
   };
 }
 
+/**
+ * Whether a scene is open, as last observed. `undefined` until the first observation, which is what
+ * makes `applyScene` idempotent without swallowing the very first call.
+ */
+let sceneReady: boolean | undefined;
+
+/**
+ * Keep the scene-dependent half of the panel in step with whether a scene is actually open.
+ *
+ * **This is why the panel would not start at all.** Startup read the scene — the map list, and the
+ * scene settings behind the wall-margin slider — the moment it reached that line, with nothing
+ * asking whether there was a scene to read. Owlbear refuses those calls outright when there is not
+ * (`MissingDataError: No scene found`), and the refusal came straight back out of `start()`, so the
+ * whole panel was abandoned over it — including the entire Appearance tab, which is room-scoped and
+ * would have worked perfectly well. A popover is a freshly built frame: its connection to Owlbear
+ * goes ready as soon as the message channel is up, which is *not* the moment the scene has been
+ * handed to it, so the read landed too early every time.
+ *
+ * **Subscribe first, then check.** This project's own rule, and the panel was the one surface not
+ * following it — the background page, the region tracker, the visibility watcher and the startup
+ * probe all do. Checking first would leave a window in which a scene arriving produces no transition
+ * to observe, and the panel would sit empty for the rest of the session. The resulting overlap is
+ * free because `applyScene` ignores an observation matching what it already believes.
+ */
+function watchScene(): void {
+  OBR.scene.onReadyChange(applyScene);
+  void OBR.scene.isReady()
+    .then(applyScene)
+    .catch((error) => {
+      // Caught rather than left to become an unhandled rejection: this runs outside `start()`, so
+      // there is no longer a catch above it, and the whole point of moving it out here was that the
+      // scene must not be able to take the panel down with it.
+      report("Could not tell whether a scene is open", error);
+    });
+}
+
+function applyScene(ready: boolean): void {
+  if (ready === sceneReady) return;
+  sceneReady = ready;
+
+  // A scene change must not leave a destructive button one click from firing, because the click
+  // that follows would land on a *different* scene than the one the GM was looking at when they
+  // armed it.
+  for (const confirmable of confirmables) confirmable.disarm();
+
+  showSceneControls(ready);
+  if (ready) refreshMapsIfReady();
+  else renderMaps([]);
+}
+
+/**
+ * Show the scene-scoped controls as what they are.
+ *
+ * Everything in Setup, plus erasing this scene's data, reads or writes the open scene — with none
+ * open they would not merely be unhelpful, they would fail. Disabled says that plainly. Appearance
+ * is deliberately untouched: it lives in room metadata and works with no scene at all, which is the
+ * whole point of the panel surviving this state rather than abandoning startup over it.
+ */
+function showSceneControls(ready: boolean): void {
+  noScene.hidden = ready;
+  wallMarginInput.disabled = !ready;
+  revealAllButton.disabled = !ready;
+  clearButton.disabled = !ready;
+  resetButton.disabled = !ready;
+  eraseSceneButton.disabled = !ready;
+}
+
+/**
+ * Refresh the map list, but only when there is a scene to read it from.
+ *
+ * The two subscriptions that call this fire for reasons of their own — and one of them, scene
+ * metadata, carries every region write during play — so they can easily land while no scene is
+ * open. Reading the scene without one is the failure this whole gate exists to stop, so the guard
+ * is load-bearing rather than defensive dressing.
+ */
+function refreshMapsIfReady(): void {
+  if (sceneReady !== true) return;
+  void refreshMaps().catch((error) => {
+    // A scene can close between the check and the read. Rare, and the next readiness change puts
+    // the panel right; reported rather than swallowed so it cannot become another silent failure.
+    report("Could not read this scene", error);
+  });
+}
+
 function renderMaps(maps: readonly MapImageSummary[]): void {
   mapsBox.replaceChildren();
-  mapsEmpty.hidden = maps.length > 0;
+  // "No MAP-layer image in this scene" is a lie when there is no scene, and `noScene` is saying the
+  // true thing in its place.
+  mapsEmpty.hidden = maps.length > 0 || sceneReady !== true;
 
   for (const map of maps) {
     const button = document.createElement("button");
@@ -745,21 +845,28 @@ function installConfirm(
 
     disarm();
     void commit().catch((error) => {
+      // `report` is the whole of it. A `say` after this one overwrote the message it had just
+      // written, so the reporting added here was wiped in the same breath as it appeared.
       report(`${idleLabel} failed`, error);
-      say("That did not work — see the log.");
     });
   });
 }
 
 async function start(): Promise<void> {
+  stage = "getting your role";
   const isGm = (await OBR.player.getRole()) === "GM";
+
+  stage = "reading the appearance settings";
   const appearance = await readAppearance();
 
+  stage = "building the tabs";
   installTabs();
 
+  stage = "reading the theme";
   await OBR.theme.getTheme().then(applyTheme).catch(() => {});
   OBR.theme.onChange(applyTheme);
 
+  stage = "showing the settings";
   showAppearance(appearance);
   // Hiding controls is a convention, not a permission boundary — DESIGN.md notes the `Permission`
   // enum does not govern metadata, so a determined player could always write these. The writes are
@@ -771,17 +878,22 @@ async function start(): Promise<void> {
   // player who is handed the tab mid-session sees live-looking sliders that do nothing until they
   // reopen the panel. Listeners on hidden controls cost nothing; that bug would not be free.
   if (isGm) {
+    stage = "wiring the GM controls";
     installGmControls();
-    await refreshMaps();
 
     // The scene's map list changes without this page knowing — a map added, deleted, or nominated
-    // from the context menu that still ships.
-    OBR.scene.items.onChange(() => {
-      void refreshMaps();
-    });
-    onSketchSettingsChange(() => {
-      void refreshMaps();
-    });
+    // from the context menu that still ships. Both are plain subscribe messages rather than calls
+    // awaiting an answer, so neither can fail for want of a scene; their *callbacks* can land
+    // without one, which is what `refreshMapsIfReady` is guarding.
+    OBR.scene.items.onChange(refreshMapsIfReady);
+    onSketchSettingsChange(refreshMapsIfReady);
+
+    // Last, and deliberately not awaited. Reading the scene is the one part of startup that can be
+    // refused for a reason that is nobody's fault and mends itself, so it must not be able to take
+    // the rest of the panel down with it — every control above this line is room-scoped and works
+    // with no scene at all.
+    stage = "waiting for a scene";
+    watchScene();
   }
 
   // Another client — the GM's other window, or any player who has been handed the tab — may change
@@ -1029,7 +1141,9 @@ function installGmControls(): void {
       } catch (error) {
         report("Could not mark the map explored", error);
       } finally {
-        revealAllButton.disabled = false;
+        // Not a flat re-enable: the scene may have closed while this ran, and `showSceneControls`
+        // has already had its say about that.
+        revealAllButton.disabled = sceneReady !== true;
       }
     })();
   });
@@ -1099,7 +1213,19 @@ function installGmControls(): void {
 }
 
 OBR.onReady(() => {
-  void start().catch((error) => {
-    report("The panel could not start", error);
-  });
+  void start()
+    // Or every later failure — a slider write, a button — would be logged against whichever startup
+    // step happened to be recorded last, which is worse than no step at all: it would read as a
+    // precise answer and point at the wrong place.
+    .then(() => {
+      stage = "running";
+    })
+    .catch((error) => {
+      // The one failure worth pointing somewhere, because it leaves nothing else to look at.
+      report(
+        "The panel could not start",
+        error,
+        "The browser console has the reason.",
+      );
+    });
 });
