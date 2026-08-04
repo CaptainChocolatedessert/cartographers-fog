@@ -40,17 +40,25 @@ const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
 const PARCHMENT_KEY = `${NAMESPACE}/parchment`;
 
 /** Same layer as the sketch, ordered by z-index rather than by layer — see `PARCHMENT_Z`. */
-const PARCHMENT_LAYER = "CONTROL" as const;
+const PARCHMENT_LAYER = "POINTER" as const;
 
 /**
- * Below the sketch, explicitly.
+ * Below the sketch, and below anything anyone else puts on this layer.
  *
- * Auto z-index would decide this from creation order, which is not something either renderer
- * controls — they are separate `addItems` calls made in whatever order a redraw happens to make
- * them. Parchment underneath ink is not a preference, it is the entire point, so it is pinned.
- * `SKETCH_Z` in `strokes.ts` and `shaderStrokes.ts` is the other half of the pair.
+ * Auto z-index would decide the first of those from creation order, which is not something either
+ * renderer controls — they are separate `addItems` calls made in whatever order a redraw happens
+ * to make them. Parchment underneath ink is not a preference, it is the entire point, so it is
+ * pinned. `SKETCH_Z` in `strokes.ts` and `shaderStrokes.ts` is the other half of the pair.
+ *
+ * **Deeply negative rather than zero, since 2026-08-04.** This layer is shared now: it is where
+ * Outliner draws, and where this extension's own "bring above the fog" puts a GM's annotations.
+ * Owlbear hands out *increasing positive* z-indexes to new items, so zero was only incidentally
+ * below them — one item created with a lower number and the parchment would cover an annotation
+ * that was raised specifically to be readable. A number nothing plausibly counts down to makes
+ * "underneath everything" a property of the value rather than a coincidence of the order things
+ * were made in.
  */
-export const PARCHMENT_Z = 0;
+export const PARCHMENT_Z = -100000;
 
 /**
  * Simplification tolerance for the cut-out holes, as a fraction of a grid square.

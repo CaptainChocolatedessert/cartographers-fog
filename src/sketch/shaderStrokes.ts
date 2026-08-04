@@ -49,7 +49,7 @@ const NAMESPACE = "io.github.captainchocolatedessert.cartographers-fog";
 const SHADER_KEY = `${NAMESPACE}/sketch-shader`;
 
 /** Same layer as `strokes.ts` — see its note, which is the one that matters. */
-const SKETCH_LAYER = "CONTROL" as const;
+const SKETCH_LAYER = "POINTER" as const;
 
 /**
  * Slots per effect. **Small, and measured — the uniform ceiling is irrelevant here.**

@@ -32,16 +32,29 @@ const SKETCH_KEY = `${NAMESPACE}/sketch-strokes`;
 /**
  * Above FOG, so remembered ground can be drawn into the dark.
  *
- * `CONTROL` is measured to draw over `FOG` — proven in step 3, when the wash rendered above the
- * fog for a GM and a player alike. The open question is whether it is the *right* one of the four
- * layers above `FOG`: it reads semantically as the layer for tool chrome, and the Outliner
- * extension puts comparable marks on `POINTER`. Worth one room test with both installed — see
- * DESIGN.md, "Rendering modes for `sketch_region`".
+ * **`POINTER` since 2026-08-04**, moved down from `CONTROL` — which the open question here had
+ * been leaning towards for a while, on the grounds that `CONTROL` reads semantically as the layer
+ * for tool chrome and Outliner puts comparable marks on `POINTER`. What settled it was the
+ * annotation feature: a GM raising a label to `POINTER` found it hidden, because `CONTROL` draws
+ * over `POINTER` (user, measured in a room). Something had to give, and moving the sketch down is
+ * the direction that puts this extension where a peer extension already agreed sketched marks
+ * belong.
+ *
+ * `CONTROL` remains measured to draw over `FOG` — proven in step 3, when the wash rendered above
+ * the fog for a GM and a player alike. `POINTER` above `FOG` is inference from the declared order
+ * plus Outliner's own use of it, **not** a measurement of ours; it is the thing to look at first
+ * if the sketch ever stops appearing over unexplored ground.
+ *
+ * The one live risk of the move is that `POINTER` is a layer another extension exposes for
+ * drawing, so our items may clutter its object list. Our output is added as *local* items rather
+ * than scene items, which ought to keep it out of any list built from the scene — unverified, and
+ * the sketch comes back to `CONTROL` if it turns out otherwise (user, 2026-08-04).
  *
  * **This line is the one that matters.** `wash.ts` and `debug/visibilityOverlay.ts` declare their
- * own layers, but neither is installed, so neither affects what anyone sees.
+ * own layers and are deliberately left on `CONTROL`; neither is installed, so neither affects what
+ * anyone sees, and the debug overlay wants to stay *above* the sketch it is used to check.
  */
-const SKETCH_LAYER = "CONTROL" as const;
+const SKETCH_LAYER = "POINTER" as const;
 
 /**
  * Colour and width now come from the GM's settings — see `appearance.ts`, whose defaults are the

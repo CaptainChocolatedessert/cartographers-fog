@@ -101,9 +101,11 @@ Two things to know before using it:
 - **Above the fog means above it for players too.** Owlbear's items have no GM-only visibility, so
   a raised annotation is on everybody's screen regardless of what they have explored. Right for a
   legend or a title; a spoiler for a note about a secret door.
-- **This extension's own sketch sits higher still.** The sketch and the parchment overlay draw on
-  the Control layer, above Pointers, so with parchment switched on a raised annotation is still
-  covered over unexplored ground. With parchment off — the default — you will not notice.
+- **The parchment sits below it.** The sketch and the parchment overlay draw on the Pointers layer
+  too, with the parchment pinned beneath everything else there, so a raised annotation stays
+  readable over unexplored ground rather than being covered by it. The sketch's own linework can
+  still cross an annotation, since the two are ordered by depth within the layer rather than
+  separated by it.
 
 ## Installation
 

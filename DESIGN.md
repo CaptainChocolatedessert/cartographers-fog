@@ -496,21 +496,40 @@ union and nothing documents its ordering. It is consistent with the one thing we
 `CONTROL` draws over `FOG` — and if it holds generally then `CONTROL` also draws over `POINTER`,
 so our strokes would sit above Outliner's rather than below them.
 
-So the open question is narrower than "does this work", and worth one room test when step 5 has
-something to look at:
+**Settled 2026-08-04: everything we draw moved to `POINTER`.** The test arrived from an unexpected
+direction. The annotation feature raises a GM's label to `POINTER`, and the user found it
+invisible — covered by our parchment. So `CONTROL` draws over `POINTER`, the declaration order
+holds as render order for the one pair anyone has now checked, and the two semantics arguments
+above were both pointing the same way regardless: `CONTROL` is tool chrome, `POINTER` is what the
+peer extension chose for exactly this job.
 
-- **Semantics.** `CONTROL` reads as the layer for tool chrome, so persistent scene content there
-  may be competing with other extensions' UI for the top of the stack. `POINTER` is what a
-  peer extension chose for exactly this job.
-- **Z-order in practice**, against Outliner and Dynamic Fog both installed.
+The move is not free of its own risk, and the risk is the one that argued *for* `CONTROL`
+originally: `POINTER` is the layer Outliner exposes for drawing, so our items may clutter its
+object list and make it hard to navigate (user, 2026-08-04). Everything this extension draws is
+added as **local** items rather than scene items, which ought to keep it out of any list built from
+the scene — that is reasoning, not a measurement, and nobody has read Outliner's source. The
+agreed fallback is to move the sketch alone back to `CONTROL`, leaving the parchment low.
 
-Neither blocks step 5, and the layer is a one-line change if the test says move.
+**Sharing a layer makes z-index load-bearing in a way it was not.** `PARCHMENT_Z` was `0`, which
+sat below `SKETCH_Z = 10` and below nothing else in particular. On a shared layer that is no longer
+enough: Owlbear assigns *increasing positive* z-indexes to new items, so zero was only incidentally
+beneath them, and one item numbered lower would put the parchment back over an annotation raised
+specifically to be readable. It is now deeply negative — "underneath everything" as a property of
+the value rather than a coincidence of creation order.
 
-**Where that line is, as of step 6:** `SKETCH_LAYER` in `src/sketch/strokes.ts`. Three modules
-declare a layer of their own — the sketch, the wash (`WASH_LAYER`) and the debug overlay
-(`OVERLAY_LAYER`) — all currently `CONTROL`, but only the sketch is installed, so it is the only
-one that decides what a player sees. An earlier revision of this section named `wash.ts` as the
-one place to change, which was true when the wash was the only thing drawing and is not any more.
+What the move does **not** buy: the sketch's linework and a raised annotation are now separated by
+depth rather than by layer, so a stroke can cross a label. The parchment — the opaque thing, and
+the one that actually hid annotations — cannot.
+
+**`POINTER` above `FOG` remains inference**, from the declared order and Outliner's use of it. Our
+one direct measurement of anything above `FOG` is still `CONTROL`, from step 3. If the sketch ever
+stops appearing over unexplored ground, look there first.
+
+**Where the lines are:** `SKETCH_LAYER` in `src/sketch/strokes.ts` and `shaderStrokes.ts`, and
+`PARCHMENT_LAYER` in `src/region/parchmentOverlay.ts`. The wash (`WASH_LAYER`) and the debug
+overlay (`OVERLAY_LAYER`) declare their own and stay on `CONTROL` deliberately — neither is
+installed, so neither affects what anyone sees, and the overlay is *meant* to sit above the sketch
+it is used to check.
 
 That divides the options by what they can actually put on screen, not by implementation taste.
 They are not mutually exclusive; a build could ship more than one as a user-selectable style.
