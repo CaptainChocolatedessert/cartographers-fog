@@ -280,6 +280,22 @@
           <button id="clear">Clear sketch</button>
           <button id="reset" class="danger">Reset explored area</button>
         </div>
+
+        <hr />
+        <!--
+          The way back for the right-click "Bring above the fog" entry. It lives here rather than
+          only on the item because an item on the Pointers layer may not be selectable, and a
+          right-click entry is unreachable on something that cannot be clicked — so this is the one
+          path that cannot strand an annotation up there.
+        -->
+        <h2>Annotations</h2>
+        <p class="hint">
+          Right-click a drawing or label and choose "Bring above the fog" to keep it readable
+          through unexplored ground. This puts every one of them back where it came from.
+        </p>
+        <div class="actions">
+          <button id="lowerAll">Send all annotations back below the fog</button>
+        </div>
       </div>
 
       <!-- 2. Appearance — how the ink looks. Nothing here changes what is drawn, only how. -->

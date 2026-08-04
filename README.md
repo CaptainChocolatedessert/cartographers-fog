@@ -61,6 +61,9 @@ GM-only — a player who opens it is told the settings are the GM's. Three tabs:
   map, so nominating a map draws it again.
 - **Reset explored area** — forget everything the party has explored in this scene. Confirmed
   with a second click, and it cannot be undone.
+- **Send all annotations back below the fog** — the way back for the annotation entry described
+  below. It takes no selection, which is the point of it: an item on the Pointers layer may not be
+  clickable, and a right-click entry is no use on something that cannot be right-clicked.
 
 **Appearance** — how the sketch looks: renderer, brush, and that brush's own controls, plus
 colour, stroke width and the hand-drawn wobble, which are shared across brushes. Each brush keeps
@@ -85,6 +88,22 @@ The three original context-menu entries still ship: right-click any item as the 
 from this map**, **Clear sketch** or **Reset explored area**. Two differences from the panel are
 worth knowing — the context-menu reset is *not* confirmed, and a locked map cannot be
 right-clicked at all, which is the hole the panel was built to close.
+
+## Annotations above the fog
+
+A label, an arrow or a room name drawn on the map is hidden by the fog like anything else, which is
+wrong for the sort of annotation meant to be readable at all times. Right-click one as the GM and
+choose **Bring above the fog**; the same entry then reads **Send back below the fog**, and puts it
+on exactly the layer it came from rather than guessing at a default.
+
+Two things to know before using it:
+
+- **Above the fog means above it for players too.** Owlbear's items have no GM-only visibility, so
+  a raised annotation is on everybody's screen regardless of what they have explored. Right for a
+  legend or a title; a spoiler for a note about a secret door.
+- **This extension's own sketch sits higher still.** The sketch and the parchment overlay draw on
+  the Control layer, above Pointers, so with parchment switched on a raised annotation is still
+  covered over unexplored ground. With parchment off — the default — you will not notice.
 
 ## Installation
 

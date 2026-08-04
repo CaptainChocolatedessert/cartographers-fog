@@ -9,6 +9,7 @@ import OBR from "@owlbear-rodeo/sdk";
 import { installDevLog, devLog, setDevLogLabel } from "./devlog";
 import { assertPixelAccess } from "./probe";
 import { installRegionTracker } from "./region/tracker";
+import { installRaiseMenu } from "./annotations/raiseMenu";
 import { installResetMenu } from "./region/resetMenu";
 import { installSketchMenus } from "./sketch/sketchMenu";
 
@@ -56,6 +57,11 @@ OBR.onReady(async () => {
   // Also ships. The discovered region only ever grows, so without a reset a GM who has explored
   // a scene has no way back to an unexplored one.
   void installResetMenu();
+
+  // Nothing to do with the sketch: a label or an arrow drawn on the map is hidden by the fog like
+  // anything else, and some annotations are meant to be read at all times. The panel carries the
+  // bulk way back, which is what makes the raise safe to offer at all — see `raiseMenu.ts`.
+  void installRaiseMenu();
 
   // The drag probe (`./debug/dragProbe`) is deliberately NOT installed. It answered its question
   // — `getItemBounds` is live mid-drag, `getItems` is not — and leaving it running costs two

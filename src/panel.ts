@@ -58,6 +58,7 @@ import {
 } from "./sketch/sketchSettings";
 import { clearRegion, writeRegion } from "./region/store";
 import { describeError } from "./describeError";
+import { lowerEveryRaised } from "./annotations/raiseMenu";
 import { buildSceneGrid } from "./region/sceneGrid";
 import { fillMask } from "./region/regionMask";
 
@@ -132,6 +133,7 @@ const playersMayStyleInput = element<HTMLInputElement>("playersMayStyle");
 const gmOnlyAppearance = element("gmOnlyAppearance");
 const tabStrip = document.querySelector<HTMLElement>(".tabs")!;
 const revealAllButton = element<HTMLButtonElement>("revealAll");
+const lowerAllButton = element<HTMLButtonElement>("lowerAll");
 const clearButton = element<HTMLButtonElement>("clear");
 const resetButton = element<HTMLButtonElement>("reset");
 const eraseSceneButton = element<HTMLButtonElement>("eraseScene");
@@ -615,6 +617,8 @@ function showSceneControls(ready: boolean): void {
   noScene.hidden = ready;
   wallMarginInput.disabled = !ready;
   revealAllButton.disabled = !ready;
+  // Scene-scoped like the rest: it reads the scene's items to find what to bring back down.
+  lowerAllButton.disabled = !ready;
   clearButton.disabled = !ready;
   resetButton.disabled = !ready;
   eraseSceneButton.disabled = !ready;
@@ -1144,6 +1148,26 @@ function installGmControls(): void {
         // Not a flat re-enable: the scene may have closed while this ran, and `showSceneControls`
         // has already had its say about that.
         revealAllButton.disabled = sceneReady !== true;
+      }
+    })();
+  });
+
+  lowerAllButton.addEventListener("click", () => {
+    void (async () => {
+      lowerAllButton.disabled = true;
+      try {
+        const moved = await lowerEveryRaised();
+        // The count is said out loud because zero is a perfectly ordinary outcome here and looks
+        // exactly like a button that did not work. Nothing else on screen changes either way.
+        say(
+          moved === 0
+            ? "No annotations were above the fog."
+            : `${moved === 1 ? "1 annotation" : `${moved} annotations`} sent back below the fog.`,
+        );
+      } catch (error) {
+        report("Could not move the annotations", error);
+      } finally {
+        lowerAllButton.disabled = sceneReady !== true;
       }
     })();
   });
